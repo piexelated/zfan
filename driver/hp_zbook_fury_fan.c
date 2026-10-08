@@ -361,12 +361,21 @@ static const struct dmi_system_id fury_fan_dmi_table[] = {
 };
 MODULE_DEVICE_TABLE(dmi, fury_fan_dmi_table);
 
+/* Other HP models may share the EC layout, but writing it blind could do anything. */
+static bool force;
+module_param(force, bool, 0444);
+MODULE_PARM_DESC(force, "Load on untested HP laptops too; their EC may differ");
+
 static int __init fury_fan_init(void)
 {
 	int status;
 
-	if (!dmi_check_system(fury_fan_dmi_table))
-		return -ENODEV;
+	if (!dmi_check_system(fury_fan_dmi_table)) {
+		if (!force || !dmi_match(DMI_SYS_VENDOR, "HP"))
+			return -ENODEV;
+		pr_warn("untested board %s, loading because force=1\n",
+			dmi_get_system_info(DMI_BOARD_NAME) ?: "unknown");
+	}
 
 	status = platform_driver_register(&fury_fan_driver);
 	if (status)

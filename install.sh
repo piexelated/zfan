@@ -1,6 +1,6 @@
 #!/bin/sh
 # Install the hp-zbook-fury-fan driver (DKMS), boot-time loading, udev permissions and the zfan CLI.
-# Run as root from the project directory.
+# Run as root from the project directory. --force installs on an untested HP laptop.
 set -eu
 
 PACKAGE=hp-zbook-fury-fan
@@ -8,6 +8,10 @@ VERSION=$(sed -n 's/^PACKAGE_VERSION="\(.*\)"/\1/p' driver/dkms.conf)
 SOURCE_DIR=/usr/src/$PACKAGE-$VERSION
 SUPPORTED_VENDOR=HP
 SUPPORTED_BOARD=8DE2
+# Written for --force so the driver keeps loading on an untested laptop; updates reuse it as the earlier consent.
+FORCE_OPTIONS=/etc/modprobe.d/hp-zbook-fury-fan.conf
+FORCE=false
+if [ "${1:-}" = "--force" ] || [ -f "$FORCE_OPTIONS" ]; then FORCE=true; fi
 # devm_platform_profile_register() with platform_profile_ops landed in Linux 6.14.
 MIN_KERNEL=6.14
 KERNEL=$(uname -r)
@@ -53,8 +57,22 @@ require_supported_laptop() {
 	vendor=$(cat /sys/class/dmi/id/sys_vendor 2>/dev/null || true)
 	board=$(cat /sys/class/dmi/id/board_name 2>/dev/null || true)
 	[ "$vendor" = "$SUPPORTED_VENDOR" ] && [ "$board" = "$SUPPORTED_BOARD" ] && return
-	fail "this is '${vendor:-unknown}' board '${board:-unknown}'" \
-		"the driver supports only the HP ZBook Fury G1i 16\" (board $SUPPORTED_BOARD)"
+	[ "$vendor" = "$SUPPORTED_VENDOR" ] || fail "this is a '${vendor:-unknown}' laptop" "the driver only knows HP's EC"
+	$FORCE || fail "board $board is untested (only the HP ZBook Fury G1i 16\", board $SUPPORTED_BOARD, is)" \
+		"other HP ZBooks may work; to try at your own risk: sudo ./install.sh --force"
+	echo "install.sh: board $board is untested; installing anyway (--force)" >&2
+}
+
+untested_board() {
+	[ "$(cat /sys/class/dmi/id/board_name 2>/dev/null || true)" != "$SUPPORTED_BOARD" ]
+}
+
+install_force_option() {
+	if untested_board; then
+		echo "options hp_zbook_fury_fan force=1" >"$FORCE_OPTIONS"
+	else
+		rm -f "$FORCE_OPTIONS"
+	fi
 }
 
 require_kernel() {
@@ -151,6 +169,7 @@ require_build_tools
 group=$(admin_group)
 
 install_driver
+install_force_option
 install_saved_fan_mode "$group"
 install_boot_integration "$group"
 install_cli

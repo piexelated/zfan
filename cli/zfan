@@ -1088,6 +1088,8 @@ MODULE_NAME = "hp_zbook_fury_fan"
 DKMS_PACKAGE = "hp-zbook-fury-fan"
 DRIVER_NAME = "hp-zbook-fury-fan"
 SUPPORTED_BOARD = "8DE2"
+# The EC values the driver writes were measured on this BIOS; newer ones probably keep them.
+TESTED_BIOS = "01.05.01"
 MODULES_LOAD_CONF = Path("/etc/modules-load.d/hp-zbook-fury-fan.conf")
 UDEV_RULE = Path("/etc/udev/rules.d/70-hp-zbook-fury-fan.rules")
 AFAN_RESTORE_LOG = "AFAN was"
@@ -1117,12 +1119,16 @@ def kernel_log_this_boot():
     return run(["journalctl", "-k", "-b", "-o", "cat", "--no-pager"])
 
 
-def check_hardware():
+def check_hardware(hwmon):
     board = read_text("/sys/class/dmi/id/board_name")
     bios = read_text("/sys/class/dmi/id/bios_version")
+    if board != SUPPORTED_BOARD and hwmon:
+        return Finding("hardware", Health.INFO, f"board {board} · {bios} is untested (loaded with --force)")
     if board != SUPPORTED_BOARD:
-        return Finding("hardware", Health.FAIL, f"board {board or 'unknown'}",
-                       f"zfan supports only the ZBook Fury G1i (board {SUPPORTED_BOARD})")
+        return Finding("hardware", Health.FAIL, f"board {board or 'unknown'} is untested",
+                       "other HP ZBooks may work; to try at your own risk: sudo ./install.sh --force" + FROM_PROJECT)
+    if TESTED_BIOS not in bios:
+        return Finding("hardware", Health.INFO, f"ZBook Fury G1i · {bios} (tested on BIOS {TESTED_BIOS})")
     return Finding("hardware", Health.OK, f"ZBook Fury G1i · {bios}")
 
 
@@ -1235,7 +1241,7 @@ def diagnose():
     hwmon = find_driver_hwmon()
     kernel_log = kernel_log_this_boot()
     return [
-        check_hardware(),
+        check_hardware(hwmon),
         check_driver(hwmon),
         check_kernel_build(),
         check_boot_loading(),

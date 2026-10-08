@@ -22,6 +22,8 @@ All notable changes to this project. Versions follow [Semantic Versioning](https
 - `zfan --version`; the version shows next to the name in the dashboard.
 - `install.sh` checks the laptop, kernel (6.14+), build tools and headers first and prints the install command for
   Fedora, Debian/Ubuntu or Arch; it explains Secure Boot key enrollment when the kernel rejects the driver.
+- `install.sh --force` (driver option `force=1`) installs on untested HP laptops; `zfan doctor` notes an untested
+  board or BIOS.
 - Fan control without sudo works for the `sudo` group where there is no `wheel` group (Debian, Ubuntu).
 - README: requirements and install steps for a fresh machine.
 - The fan mode (power mode or a pinned level) survives reboots, driver reloads and updates; `zfan doctor` checks it.
