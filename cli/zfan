@@ -527,6 +527,10 @@ SLIDER_ENDS = ("Quieter", "Cooler")
 SLIDER_INDENT = MARGIN + " " * LABEL_WIDTH
 # Solid while the fan level is pinned, hollow while it follows the desktop power profile.
 PINNED_MARKER, FOLLOWING_MARKER = "▲", "△"
+CONTROL_SELECTED, CONTROL_UNSELECTED = "●", "○"
+STATUS_GAP = "    "
+# The desktop's name for each platform profile, where it differs.
+POWER_MODE_NAMES = {"quiet": "power saver"}
 READING_COLUMNS = (("temp", 7), ("hp", 7), ("power", 9), ("limit", 11), ("clock", 11))
 FAN_READING_WIDTH = len("  00000 rpm")
 
@@ -556,19 +560,45 @@ def slider_labels(level, following, color):
 
 
 def fan_status(snapshot):
-    if snapshot.full_speed:
-        return paint("overridden by full speed", HOT)
-    if snapshot.fan_mode == FOLLOW:
-        return note(f"follows {snapshot.power}")
-    return ""
+    return paint("overridden by full speed", HOT) if snapshot.full_speed else ""
+
+
+def power_mode_name(profile):
+    return POWER_MODE_NAMES.get(profile, profile)
+
+
+def control_choice(name, selected):
+    if selected:
+        return paint(CONTROL_SELECTED + " ", ACCENT) + paint(name, TEXT, bold=True)
+    return note(f"{CONTROL_UNSELECTED} {name}")
+
+
+def control_outcome(snapshot, following):
+    """Following: which fan level the power mode gives. Manual: that the power mode is ignored."""
+    mode = power_mode_name(snapshot.power)
+    if not following:
+        return note(f"{mode} ignored")
+    level = snapshot.effective_fan_mode()
+    if level is None:
+        return note(f"{mode}: no fan level for it")
+    return paint(mode, LEVEL_COLOR.get(snapshot.power, TEXT)) + note(" → ") + paint(level, LEVEL_COLOR[level])
+
+
+def fan_control(snapshot):
+    """Who sets the fan level: the desktop power mode, or a level pinned by hand."""
+    following = snapshot.fan_mode == FOLLOW
+    choices = control_choice("power mode", following) + "    " + control_choice("manual", not following)
+    return row("control", pad(choices, SLIDER_WIDTH) + STATUS_GAP + control_outcome(snapshot, following))
 
 
 def fan_slider(snapshot):
     level = snapshot.effective_fan_mode()
     following = snapshot.fan_mode == FOLLOW
     color = LEVEL_COLOR.get(level, TEXT)
-    track = slider_track(level, following, color) + "    " + fan_status(snapshot)
+    track = slider_track(level, following, color) + STATUS_GAP + fan_status(snapshot)
     return [
+        fan_control(snapshot),
+        "",
         SLIDER_INDENT + spread(note(SLIDER_ENDS[0]), note(SLIDER_ENDS[1]), SLIDER_WIDTH),
         row("fans", track),
         SLIDER_INDENT + slider_labels(level, following, color),
@@ -811,11 +841,11 @@ class Toast:
 
 
 class Dashboard:
-    """←→ pin a quieter or cooler fan level, f returns the fans to following the desktop power profile."""
+    """←→ pin a quieter or cooler fan level, f switches between the desktop power mode and manual."""
 
     KEYS_LEFT = {"\x1b[D", "h"}
     KEYS_RIGHT = {"\x1b[C", "l"}
-    KEYS_FOLLOW = {"f"}
+    KEYS_CONTROL = {"f"}
     KEYS_QUIT = {"q", "Q", "\x1b"}
     KEYS_DETAILS = {"i", "\t"}
 
@@ -841,10 +871,15 @@ class Dashboard:
             return
         self._set_fan_mode(target, f"✓ fans {target}")
 
-    def follow_power_profile(self):
-        if self.snapshot.fan_mode == FOLLOW:
+    def toggle_control(self):
+        """Hands the fans to the power mode, or pins the level the power mode gave them."""
+        if self.snapshot.fan_mode != FOLLOW:
+            self._set_fan_mode(FOLLOW, "✓ fans set by power mode")
             return
-        self._set_fan_mode(FOLLOW, f"✓ fans follow {self.snapshot.power}")
+        level = self.snapshot.effective_fan_mode()
+        if level not in FAN_LEVELS:
+            return
+        self._set_fan_mode(level, f"✓ fans manual: {level}")
 
     def _set_fan_mode(self, mode, success):
         try:
@@ -866,8 +901,8 @@ class Dashboard:
             self.step_fan_level(-1)
         elif key in self.KEYS_RIGHT:
             self.step_fan_level(1)
-        elif key in self.KEYS_FOLLOW:
-            self.follow_power_profile()
+        elif key in self.KEYS_CONTROL:
+            self.toggle_control()
 
     def render(self, columns, rows):
         if columns < MIN_WIDTH:
@@ -886,10 +921,9 @@ class Dashboard:
         if self.view is View.DETAILS:
             keys = [hint("i", "back"), hint("q", "quit")]
         else:
-            keys = [hint("←→", "fans")]
-            if self.snapshot.fan_mode != FOLLOW:
-                keys.append(hint("f", "follow"))
-            keys += [hint("i", "details"), hint("q", "quit")]
+            following = self.snapshot.fan_mode == FOLLOW
+            keys = [hint("←→", "pin" if following else "fans"), hint("f", "manual" if following else "power mode"),
+                    hint("i", "details"), hint("q", "quit")]
         footer = spread(MARGIN + supply_summary(self.snapshot.supply), "  ".join(keys), width)
         message = paint(self.toast.text, self.toast.color) if self.toast.visible() else ""
         return footer + "\n" + MARGIN + message

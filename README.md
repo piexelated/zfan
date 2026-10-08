@@ -3,8 +3,10 @@
 Fan control for the HP ZBook Fury G1i 16" (board `8DE2`) from a running Linux system: a kernel driver and a CLI.
 
 ```
+  control      ● power mode    ○ manual                    performance → boost
+
                Quieter                           Cooler
-  fans         ─────────────────────────────────────△──    follows performance
+  fans         ─────────────────────────────────────△──
                quiet             auto             boost
 
                temp   hp     power    limit      clock
@@ -68,14 +70,16 @@ Package power needs the CPU energy counter, which is root-only by default as a s
 
 | Key | Action |
 |---|---|
-| `←` `→` / `h` `l` | pin a quieter or cooler fan level |
-| `f` | follow the desktop power profile again |
+| `←` `→` / `h` `l` | pin a quieter or cooler fan level (switches control to manual) |
+| `f` | switch control between the desktop power mode and manual |
 | `i` / `Tab` | details view |
 | `q` / `Esc` | quit |
 
-The power profile is the desktop one (quick settings; CPU tuning via tuned); zfan doesn't set it. By default the
-fans follow it like HP's own mode table does (quiet → auto, balanced → auto, performance → boost), shown as a hollow
-marker. Moving the slider pins `quiet`, `auto` or `boost` regardless of the profile (solid marker).
+The power mode is the desktop one (quick settings; CPU tuning via tuned); zfan doesn't set it. The `control` row
+shows who sets the fan level. With **power mode** (the default) the fans switch with it like HP's own mode table
+does: power saver → auto, balanced → auto, performance → boost; the row shows the pair in use, e.g.
+`balanced → auto`, and the slider marker is hollow. With **manual** the level you pinned stays, whatever the power
+mode (solid marker).
 
 | Fan mode | Fans |
 |---|---|
