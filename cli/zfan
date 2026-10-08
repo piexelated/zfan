@@ -5,6 +5,7 @@ Run without arguments for the interactive dashboard; subcommands are for scripts
 """
 
 import enum
+import json
 import os
 import select
 import shutil
@@ -14,6 +15,8 @@ import sys
 import termios
 import time
 import tty
+import urllib.error
+import urllib.request
 from pathlib import Path
 
 # Project version; driver/dkms.conf and the driver's MODULE_VERSION carry the same one (CI checks).
@@ -952,6 +955,10 @@ MODULES_LOAD_CONF = Path("/etc/modules-load.d/hp-zbook-fury-fan.conf")
 UDEV_RULE = Path("/etc/udev/rules.d/70-hp-zbook-fury-fan.rules")
 AFAN_RESTORE_LOG = "AFAN was"
 FROM_PROJECT = "   (in the project directory)"
+GITHUB_REPO = "RePixelatedMC/zfan"
+LATEST_RELEASE_URL = f"https://api.github.com/repos/{GITHUB_REPO}/releases/latest"
+UPDATE_CHECK_TIMEOUT_S = 3
+UPDATE_COMMAND = "git pull && sudo ./install.sh"
 
 
 class Health(enum.Enum):
@@ -998,6 +1005,9 @@ def check_driver(hwmon):
     if loaded != installed:
         return Finding("driver", Health.WARN, f"{loaded} loaded, {installed} installed",
                        f"sudo modprobe -r {MODULE_NAME} && sudo modprobe {MODULE_NAME}")
+    if loaded != VERSION:
+        return Finding("driver", Health.WARN, f"{loaded} loaded, but zfan is {VERSION}",
+                       "sudo ./install.sh" + FROM_PROJECT)
     return Finding("driver", Health.OK, f"{loaded} loaded")
 
 
@@ -1083,6 +1093,35 @@ def check_firmware_resets(kernel_log):
     return Finding("firmware", Health.OK, "no fan-mode resets this boot")
 
 
+def latest_release():
+    """Version of the newest GitHub release, or None when GitHub is unreachable or nothing is published."""
+    request = urllib.request.Request(LATEST_RELEASE_URL, headers={
+        "Accept": "application/vnd.github+json", "User-Agent": f"zfan/{VERSION}"})
+    try:
+        with urllib.request.urlopen(request, timeout=UPDATE_CHECK_TIMEOUT_S) as response:
+            tag = json.load(response).get("tag_name", "")
+    except (OSError, ValueError):
+        return None
+    return tag.removeprefix("v") or None
+
+
+def version_key(version):
+    try:
+        return tuple(int(part) for part in version.split("."))
+    except ValueError:
+        return None
+
+
+def check_update():
+    latest = latest_release()
+    if latest is None:
+        return Finding("updates", Health.INFO, "couldn't check GitHub releases (offline or none published)")
+    current, newest = version_key(VERSION), version_key(latest)
+    if not newest or not current or newest <= current:
+        return Finding("updates", Health.OK, f"{VERSION} is the latest")
+    return Finding("updates", Health.WARN, f"{latest} available, this is {VERSION}", UPDATE_COMMAND + FROM_PROJECT)
+
+
 def diagnose():
     hwmon = find_driver_hwmon()
     kernel_log = kernel_log_this_boot()
@@ -1096,6 +1135,7 @@ def diagnose():
         check_fans(hwmon),
         check_max_speed(hwmon),
         check_firmware_resets(kernel_log),
+        check_update(),
     ]
 
 

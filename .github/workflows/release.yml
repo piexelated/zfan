@@ -17,7 +17,7 @@ jobs:
         run: echo "version=$(tools/check-version.sh "$GITHUB_REF_NAME")" >> "$GITHUB_OUTPUT"
       - name: Source archive
         run: |
-          name=hp-zbook-fury-fan-control-${{ steps.version.outputs.version }}
+          name=zfan-${{ steps.version.outputs.version }}
           git archive --format=tar.gz --prefix="$name/" -o "$name.tar.gz" "$GITHUB_REF_NAME"
           sha256sum "$name.tar.gz" > "$name.tar.gz.sha256"
       - name: Release notes from CHANGELOG.md
@@ -30,4 +30,4 @@ jobs:
       - name: Publish
         env:
           GH_TOKEN: ${{ github.token }}
-        run: gh release create "$GITHUB_REF_NAME" --title "$GITHUB_REF_NAME" --notes-file notes.md hp-zbook-fury-fan-control-*.tar.gz*
+        run: gh release create "$GITHUB_REF_NAME" --title "$GITHUB_REF_NAME" --notes-file notes.md zfan-*.tar.gz*

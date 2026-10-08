@@ -23,6 +23,7 @@ All notable changes to this project. Versions follow [Semantic Versioning](https
   Fedora, Debian/Ubuntu or Arch; it explains Secure Boot key enrollment when the kernel rejects the driver.
 - Fan control without sudo works for the `sudo` group where there is no `wheel` group (Debian, Ubuntu).
 - README: requirements and install steps for a fresh machine.
+- `zfan doctor` checks GitHub for a newer release and warns when the loaded driver and zfan versions differ.
 
 ### Removed
 

@@ -35,8 +35,8 @@ Fan control for the HP ZBook Fury G1i 16" (board `8DE2`) from a running Linux sy
 ## Install
 
 ```sh
-git clone https://github.com/RePixelatedMC/hp-zbook-fury-fan-control.git
-cd hp-zbook-fury-fan-control
+git clone https://github.com/RePixelatedMC/zfan.git
+cd zfan
 sudo ./install.sh
 zfan
 ```
@@ -89,12 +89,15 @@ For scripts:
 |---|---|
 | `zfan status` | one-shot status (also used automatically when output is not a terminal) |
 | `zfan details` | one-shot details view |
-| `zfan doctor` | check driver, boot setup, permissions, power profiles, fans and full speed; prints a fix for each problem |
+| `zfan doctor` | check driver, boot setup, permissions, power profiles, fans, full speed and updates; prints a fix for each problem |
 | `zfan fans follow\|quiet\|auto\|boost` | set the fan mode |
 | `zfan max` / `zfan max off` | full fan speed on / off |
 | `zfan --version` | print the version |
 
 The desktop power-mode switch (tuned-ppd or power-profiles-daemon) drives the same profiles. `sensors` shows the fan speeds.
+
+`zfan doctor` is the only command that goes online: it asks GitHub for the latest release (one request, 3 s timeout)
+and also warns when the loaded driver and zfan are different versions. Update with `git pull && sudo ./install.sh`.
 
 ## Full speed is locked (for now)
 
