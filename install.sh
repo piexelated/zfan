@@ -52,9 +52,9 @@ require_root() {
 require_supported_laptop() {
 	vendor=$(cat /sys/class/dmi/id/sys_vendor 2>/dev/null || true)
 	board=$(cat /sys/class/dmi/id/board_name 2>/dev/null || true)
-	[ "$vendor" = "$SUPPORTED_VENDOR" ] && [ "$board" = "$SUPPORTED_BOARD" ] ||
-		fail "this is '${vendor:-unknown}' board '${board:-unknown}'" \
-			"the driver supports only the HP ZBook Fury G1i 16\" (board $SUPPORTED_BOARD)"
+	[ "$vendor" = "$SUPPORTED_VENDOR" ] && [ "$board" = "$SUPPORTED_BOARD" ] && return
+	fail "this is '${vendor:-unknown}' board '${board:-unknown}'" \
+		"the driver supports only the HP ZBook Fury G1i 16\" (board $SUPPORTED_BOARD)"
 }
 
 require_kernel() {

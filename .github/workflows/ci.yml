@@ -51,7 +51,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - name: Install kernel headers
-        run: dnf install -y --setopt=install_weak_deps=False gcc make kernel-devel elfutils-libelf-devel
+        run: dnf install -y --setopt=install_weak_deps=False gcc make kernel-devel elfutils-libelf-devel kmod
       - name: Build module
         run: |
           kdir=$(ls -d /usr/src/kernels/* | sort -V | tail -1)
