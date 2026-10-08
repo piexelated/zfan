@@ -1,0 +1,33 @@
+name: Release
+
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Tag matches the version
+        id: version
+        run: echo "version=$(tools/check-version.sh "$GITHUB_REF_NAME")" >> "$GITHUB_OUTPUT"
+      - name: Source archive
+        run: |
+          name=hp-zbook-fury-fan-control-${{ steps.version.outputs.version }}
+          git archive --format=tar.gz --prefix="$name/" -o "$name.tar.gz" "$GITHUB_REF_NAME"
+          sha256sum "$name.tar.gz" > "$name.tar.gz.sha256"
+      - name: Release notes from CHANGELOG.md
+        run: |
+          awk -v v="${{ steps.version.outputs.version }}" '
+            /^## \[/ { if (found) exit; found = index($0, "[" v "]") > 0; next }
+            found
+          ' CHANGELOG.md > notes.md
+          test -s notes.md
+      - name: Publish
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release create "$GITHUB_REF_NAME" --title "$GITHUB_REF_NAME" --notes-file notes.md hp-zbook-fury-fan-control-*.tar.gz*

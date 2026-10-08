@@ -1,0 +1,1216 @@
+#!/usr/bin/env python3
+"""zfan — fan control for the HP ZBook Fury G1i (hp-zbook-fury-fan driver).
+
+Run without arguments for the interactive dashboard; subcommands are for scripts.
+"""
+
+import enum
+import os
+import select
+import shutil
+import signal
+import subprocess
+import sys
+import termios
+import time
+import tty
+from pathlib import Path
+
+# Project version; driver/dkms.conf and the driver's MODULE_VERSION carry the same one (CI checks).
+VERSION = "0.5.0"
+HWMON_NAME = "hp_zbook_fury"
+PLATFORM_PROFILE = Path("/sys/firmware/acpi/platform_profile")
+DMI = Path("/sys/class/dmi/id")
+DEVICE_NAME = "hp zbook fury g1i"
+FAN_COUNT = 3
+# Bar scale per fan: the highest speeds measured on the boost curve.
+FAN_SCALE_RPM = (6500, 6500, 8500)
+# Mark a fan's target on its bar while the fan is still this far from it.
+RAMP_THRESHOLD_RPM = 150
+
+PWM_FULL_SPEED = "0"
+PWM_FAN_MODE = "2"
+
+# Desktop power profile name for each platform profile (net.hadess.PowerProfiles).
+DESKTOP_PROFILES = {"quiet": "power-saver", "balanced": "balanced", "performance": "performance"}
+FOLLOW = "follow"
+FAN_LEVELS = ("quiet", "auto", "boost")
+FAN_MODES = (FOLLOW,) + FAN_LEVELS
+# The fan level "follow" picks for each power profile (mirrors the driver).
+FOLLOWED_FAN_MODE = {"quiet": "auto", "balanced": "auto", "performance": "boost"}
+
+SENSOR_REFRESH_S = 1.0
+FRAME_INTERVAL_S = 0.12
+TOAST_DURATION_S = 3.0
+
+MAX_WIDTH = 100
+MIN_WIDTH = 84
+MARGIN = "  "
+LABEL_WIDTH = 13
+WARM_C, HOT_C = 85, 95
+THROTTLE_ALERT_PERCENT = 10
+
+COLOR = sys.stdout.isatty() and "NO_COLOR" not in os.environ
+
+TEXT = (222, 226, 232)
+MUTED = (122, 130, 142)
+FAINT = (66, 72, 82)
+ACCENT = (240, 182, 96)
+HOT = (238, 118, 108)
+COOL = (118, 182, 196)
+# Warnings below alarm level; the accent stays reserved for the selection.
+CAUTION = (186, 160, 120)
+
+# Level colors: cool for quiet, the accent for the middle, hot for the top.
+LEVEL_COLOR = {"quiet": COOL, "balanced": ACCENT, "auto": ACCENT, "performance": HOT, "boost": HOT}
+
+
+class FanError(Exception):
+    """A user-facing failure, optionally with a hint on how to fix it."""
+
+    def __init__(self, message, hint=None):
+        super().__init__(message)
+        self.message = message
+        self.hint = hint
+
+
+LOCKED = FanError("full speed is locked: the EC drops host fan overrides this boot",
+                  "boost is the maximum for now: zfan fans boost")
+
+
+# ─── styling ────────────────────────────────────────────────────────────────
+
+def blend(start, end, fraction):
+    return tuple(round(a + (b - a) * fraction) for a, b in zip(start, end))
+
+
+def level_gradient(fraction):
+    """COOL at 0, ACCENT at 0.5, HOT at 1."""
+    if fraction < 0.5:
+        return blend(COOL, ACCENT, fraction * 2)
+    return blend(ACCENT, HOT, (fraction - 0.5) * 2)
+
+
+def paint(text, rgb, bold=False):
+    if not COLOR:
+        return text
+    weight = "1;" if bold else ""
+    return f"\x1b[{weight}38;2;{rgb[0]};{rgb[1]};{rgb[2]}m{text}\x1b[0m"
+
+
+def visible_len(text):
+    length, in_escape = 0, False
+    for ch in text:
+        if ch == "\x1b":
+            in_escape = True
+        elif in_escape and ch == "m":
+            in_escape = False
+        elif not in_escape:
+            length += 1
+    return length
+
+
+def spread(left, right, width):
+    return left + " " * max(1, width - visible_len(left) - visible_len(right)) + right
+
+
+def row(label, content=""):
+    return MARGIN + paint(label.ljust(LABEL_WIDTH), MUTED) + content
+
+
+
+# ─── system files ───────────────────────────────────────────────────────────
+
+def run(command, timeout=10):
+    try:
+        result = subprocess.run(command, capture_output=True, text=True, timeout=timeout)
+    except (OSError, subprocess.TimeoutExpired):
+        return ""
+    return result.stdout.strip()
+
+
+def read_text(path):
+    try:
+        return Path(path).read_text().strip()
+    except OSError:
+        return ""
+
+
+def celsius_from(path):
+    millidegrees = read_text(path)
+    return int(millidegrees) // 1000 if millidegrees.lstrip("-").isdigit() else None
+
+
+
+# ─── hardware ───────────────────────────────────────────────────────────────
+
+class FanHardware:
+    """Reads and changes fan state through the driver's sysfs files."""
+
+    def __init__(self):
+        self.hwmon = self._find_hwmon()
+        self.device = self.hwmon / "device"
+        self.coretemp_input = self._find_package_temperature()
+        self.readings = SystemReadings()
+
+    @staticmethod
+    def _find_hwmon():
+        for name_file in Path("/sys/class/hwmon").glob("hwmon*/name"):
+            if name_file.read_text().strip() == HWMON_NAME:
+                return name_file.parent
+        raise FanError("driver not loaded", "load it with: sudo modprobe hp_zbook_fury_fan")
+
+    @staticmethod
+    def _find_package_temperature():
+        for name_file in Path("/sys/class/hwmon").glob("hwmon*/name"):
+            if name_file.read_text().strip() != "coretemp":
+                continue
+            for label in name_file.parent.glob("temp*_label"):
+                if label.read_text().startswith("Package"):
+                    return label.with_name(label.name.replace("label", "input"))
+        return None
+
+    def _read_fans(self, kind):
+        return [int((self.hwmon / f"fan{i}_{kind}").read_text()) for i in range(1, FAN_COUNT + 1)]
+
+    def fan_rpms(self):
+        return self._read_fans("input")
+
+    def fan_targets(self):
+        return self._read_fans("target")
+
+    def full_speed(self):
+        return (self.hwmon / "pwm1_enable").read_text().strip() == PWM_FULL_SPEED
+
+    def max_available(self):
+        """True when full speed reaches hardware maximum; False while the EC locks overrides."""
+        flag = self.device / "fan_max_available"
+        return flag.exists() and flag.read_text().strip() == "1"
+
+    def fan_mode(self):
+        return (self.device / "fan_mode").read_text().strip()
+
+    def afan(self):
+        """Raw EC fan-mode byte, or "" with a driver older than 0.4.2."""
+        return read_text(self.device / "afan")
+
+    def cpu_celsius(self):
+        """Package die sensor from coretemp: the real, spiky temperature the CPU throttles on."""
+        return celsius_from(self.coretemp_input) if self.coretemp_input else None
+
+    @staticmethod
+    def power_profile():
+        return PLATFORM_PROFILE.read_text().strip() if PLATFORM_PROFILE.exists() else "unknown"
+
+    @staticmethod
+    def _write(path, value, what):
+        try:
+            path.write_text(value)
+        except PermissionError:
+            raise FanError(f"no permission to change the {what}",
+                           "run sudo ./install.sh to install the udev rule, or use sudo")
+        except OSError as error:
+            raise FanError(f"the driver rejected the {what} ({error.strerror})")
+
+    def set_full_speed(self, enabled):
+        if enabled and not self.max_available():
+            raise LOCKED
+        self._write(self.hwmon / "pwm1_enable", PWM_FULL_SPEED if enabled else PWM_FAN_MODE, "full speed setting")
+
+    def set_fan_mode(self, mode):
+        self._write(self.device / "fan_mode", mode, "fan mode")
+
+
+POWERCAP = Path("/sys/class/powercap")
+CPU_PACKAGE_ZONE = "package-0"
+# RAPL constraint name → Intel's PL name. MSR zones are "intel-rapl", MMIO zones "intel-rapl-mmio".
+RAPL_LIMITS = {"long_term": "pl1", "short_term": "pl2", "peak_power": "pl4"}
+RAPL_MSR_PREFIX = "intel-rapl:"
+CPU_ROOT = Path("/sys/devices/system/cpu")
+PACKAGE_THROTTLE_MS = CPU_ROOT / "cpu0" / "thermal_throttle" / "package_throttle_total_time_ms"
+TUNED_ACTIVE_PROFILE = Path("/etc/tuned/active_profile")
+# BIOS "Customized Fan Control Options": 0 is HP's default policy, higher values lower the ceiling of how
+# aggressively the EC cools. Read-only here; it only changes in BIOS setup.
+FAN_CEILING_SETTING = Path("/sys/class/firmware-attributes/hp-bioscfg/attributes/Customized Fan Control Options")
+THERMAL_ZONES = Path("/sys/class/thermal")
+EC_ZONE_PREFIX = "SEN"
+# HP's ACPI thermal zones, read from the EC through HP's GTTP method: the temperatures as HP's firmware
+# sees them. CPU and GPU are smoothed and lag the die sensors. Label → ACPI path, in display order.
+HP_ZONES = {
+    "cpu": "\\_TZ_.CPUZ",
+    "gpu": "\\_TZ_.GFXZ",
+    "skin 1": "\\_TZ_.SK1Z",
+    "skin 2": "\\_TZ_.SK2Z",
+    "battery": "\\_TZ_.BATZ",
+    "charger": "\\_TZ_.CHGZ",
+    "extz": "\\_TZ_.EXTZ",
+    "locz": "\\_TZ_.LOCZ",
+}
+PCI_DEVICES = Path("/sys/bus/pci/devices")
+NVIDIA_VENDOR = "0x10de"
+DISPLAY_CLASS_PREFIX = "0x03"
+GPU_QUERY_TIMEOUT_S = 2
+GPU_QUERY_FIELDS = ("temperature.gpu", "power.draw", "enforced.power.limit", "power.default_limit",
+                    "power.max_limit", "pstate", "clocks.gr", "clocks.mem", "utilization.gpu",
+                    "clocks_event_reasons.active")
+# nvidia-smi clocks_event_reasons bits that hold clocks back (idle and app settings left out).
+GPU_LIMIT_REASONS = {0x4: "power cap", 0x8: "hw slowdown", 0x20: "sw thermal", 0x40: "hw thermal",
+                     0x80: "power brake"}
+POWER_SUPPLIES = Path("/sys/class/power_supply")
+MICRO = 1_000_000
+MS_PER_S = 1000
+
+
+class RateMeter:
+    """Turns a growing counter into a per-second rate between two consecutive readings."""
+
+    def __init__(self, wrap=None):
+        self.wrap = wrap
+        self.last = None
+
+    def update(self, value):
+        now = time.monotonic()
+        previous, self.last = self.last, (value, now)
+        if value is None or previous is None or previous[0] is None or now <= previous[1]:
+            return None
+        delta = value - previous[0]
+        if delta < 0 and self.wrap:
+            delta += self.wrap
+        return delta / (now - previous[1]) if delta >= 0 else None
+
+
+class RaplConstraint:
+    def __init__(self, watts, window_s, rated_w):
+        self.watts, self.window_s, self.rated_w = watts, window_s, rated_w
+
+
+class RaplZone:
+    """One powercap zone, e.g. intel-rapl:0 (MSR) or intel-rapl-mmio:0 (MMIO), with its limits by PL name."""
+
+    def __init__(self, zone_id, name, enabled, constraints):
+        self.zone_id, self.name, self.enabled, self.constraints = zone_id, name, enabled, constraints
+
+    @property
+    def interface(self):
+        return "msr" if self.zone_id.startswith(RAPL_MSR_PREFIX) else "mmio"
+
+    @property
+    def is_package(self):
+        return self.name == CPU_PACKAGE_ZONE
+
+
+def applied_limit_w(zones, pl):
+    """The lowest enabled package limit of this kind: that one is what the CPU obeys."""
+    values = [zone.constraints[pl].watts for zone in zones
+              if zone.is_package and zone.enabled and pl in zone.constraints and zone.constraints[pl].watts]
+    return min(values) if values else None
+
+
+class CpuReading:
+    def __init__(self, celsius, hp_celsius, package_w, throttle_percent, zones, avg_ghz, max_ghz, governor, epp,
+                 turbo):
+        self.celsius, self.hp_celsius = celsius, hp_celsius
+        self.package_w, self.throttle_percent = package_w, throttle_percent
+        self.zones = zones
+        self.avg_ghz, self.max_ghz = avg_ghz, max_ghz
+        self.governor, self.epp, self.turbo = governor, epp, turbo
+
+
+class GpuReading:
+    def __init__(self, fields):
+        (celsius, draw, enforced, default, maximum, self.pstate, core, memory, util, reasons) = fields
+        self.celsius, self.draw_w = round(float(celsius)), round(float(draw))
+        self.limit_w, self.default_w, self.max_w = (round(float(v)) for v in (enforced, default, maximum))
+        self.core_mhz, self.memory_mhz, self.util_percent = int(core), int(memory), int(util)
+        mask = int(reasons, 16)
+        self.limited_by = [name for bit, name in GPU_LIMIT_REASONS.items() if mask & bit]
+
+
+class SupplyReading:
+    def __init__(self, on_ac, status, percent, energy_wh, full_wh, design_wh, cycles, draw_w):
+        self.on_ac, self.status, self.percent = on_ac, status, percent
+        self.energy_wh, self.full_wh, self.design_wh = energy_wh, full_wh, design_wh
+        self.cycles, self.draw_w = cycles, draw_w
+
+
+class SystemReadings:
+    """CPU, GPU, EC thermal zones and power supply. Everything here is readable without root,
+    except CPU package energy (wheel-readable through the udev rule)."""
+
+    def __init__(self):
+        self.package_zone = self._find_package_zone()
+        self.gpu_device = self._find_nvidia_gpu()
+        wrap = read_text(self.package_zone / "max_energy_range_uj") if self.package_zone else ""
+        self.package_energy = RateMeter(wrap=int(wrap) if wrap else None)
+        self.throttle_time = RateMeter()
+        self.hp_zone_paths = self._find_hp_zones()
+
+    @staticmethod
+    def _find_hp_zones():
+        """Label → thermal zone directory, for the HP zones this firmware exposes."""
+        labels = {path: label for label, path in HP_ZONES.items()}
+        found = {}
+        for path_file in THERMAL_ZONES.glob("thermal_zone*/device/path"):
+            label = labels.get(read_text(path_file))
+            if label:
+                found[label] = path_file.parent.parent
+        return {label: found[label] for label in HP_ZONES if label in found}
+
+    def hp_zones(self):
+        """HP's temperatures in °C by label; None where a zone read fails."""
+        return {label: celsius_from(zone / "temp") for label, zone in self.hp_zone_paths.items()}
+
+    @staticmethod
+    def _find_package_zone():
+        for zone in POWERCAP.glob(RAPL_MSR_PREFIX + "*"):
+            if read_text(zone / "name") == CPU_PACKAGE_ZONE:
+                return zone
+        return None
+
+    @staticmethod
+    def _find_nvidia_gpu():
+        for device in PCI_DEVICES.glob("*"):
+            if (read_text(device / "vendor") == NVIDIA_VENDOR
+                    and read_text(device / "class").startswith(DISPLAY_CLASS_PREFIX)):
+                return device
+        return None
+
+    @staticmethod
+    def _int(path):
+        value = read_text(path)
+        return int(value) if value.lstrip("-").isdigit() else None
+
+    def cpu(self, celsius, hp_celsius):
+        energy_uj = self._int(self.package_zone / "energy_uj") if self.package_zone else None
+        package_uj_per_s = self.package_energy.update(energy_uj)
+        throttle_ms_per_s = self.throttle_time.update(self._int(PACKAGE_THROTTLE_MS))
+        frequencies = [self._int(path) for path in CPU_ROOT.glob("cpu[0-9]*/cpufreq/scaling_cur_freq")]
+        frequencies = [khz for khz in frequencies if khz]
+        cpufreq = CPU_ROOT / "cpu0" / "cpufreq"
+        return CpuReading(
+            celsius=celsius,
+            hp_celsius=hp_celsius,
+            package_w=package_uj_per_s / MICRO if package_uj_per_s is not None else None,
+            throttle_percent=min(100.0, throttle_ms_per_s / MS_PER_S * 100) if throttle_ms_per_s is not None else None,
+            zones=self.rapl_zones(),
+            avg_ghz=sum(frequencies) / len(frequencies) / MICRO if frequencies else None,
+            max_ghz=max(frequencies) / MICRO if frequencies else None,
+            governor=read_text(cpufreq / "scaling_governor"),
+            epp=read_text(cpufreq / "energy_performance_preference"),
+            turbo=read_text(CPU_ROOT / "intel_pstate" / "no_turbo") == "0",
+        )
+
+    @classmethod
+    def rapl_zones(cls):
+        zones = []
+        for zone in sorted(POWERCAP.glob("intel-rapl*:*")):
+            constraints = {}
+            for name_file in zone.glob("constraint_*_name"):
+                pl = RAPL_LIMITS.get(read_text(name_file))
+                prefix = name_file.name.removesuffix("name")
+                microwatts = cls._int(zone / (prefix + "power_limit_uw"))
+                if pl is None or microwatts is None:
+                    continue
+                window_us = cls._int(zone / (prefix + "time_window_us"))
+                rated_uw = cls._int(zone / (prefix + "max_power_uw"))
+                constraints[pl] = RaplConstraint(microwatts // MICRO, window_us / MICRO if window_us else None,
+                                                 rated_uw // MICRO if rated_uw else None)
+            zones.append(RaplZone(zone.name, read_text(zone / "name"), read_text(zone / "enabled") == "1",
+                                  constraints))
+        return zones
+
+    def gpu_state(self):
+        return read_text(self.gpu_device / "power" / "runtime_status") if self.gpu_device else None
+
+    def gpu(self):
+        """None while the dGPU sleeps: querying it would wake it up."""
+        if self.gpu_state() != "active":
+            return None
+        output = run(["nvidia-smi", "--query-gpu=" + ",".join(GPU_QUERY_FIELDS), "--format=csv,noheader,nounits"],
+                     timeout=GPU_QUERY_TIMEOUT_S)
+        try:
+            return GpuReading([field.strip() for field in output.split(",")])
+        except ValueError:
+            return None
+
+    @staticmethod
+    def ec_zones():
+        """EC sensors SEN1..SEN6 in °C; the hottest one picks the EC's fan-curve step."""
+        zones = []
+        for zone in THERMAL_ZONES.glob("thermal_zone*"):
+            name = read_text(zone / "type")
+            millidegrees = read_text(zone / "temp")
+            if name.startswith(EC_ZONE_PREFIX) and millidegrees:
+                zones.append((name.lower(), round(int(millidegrees) / 1000)))
+        return sorted(zones)
+
+    def supply(self):
+        on_ac, battery = False, None
+        for supply in POWER_SUPPLIES.glob("*"):
+            kind = read_text(supply / "type")
+            if kind == "Mains":
+                on_ac = on_ac or read_text(supply / "online") == "1"
+            elif kind == "Battery" and read_text(supply / "scope") != "Device":
+                battery = supply
+        if battery is None:
+            return SupplyReading(on_ac, None, None, None, None, None, None, None)
+
+        def wh(name):
+            value = self._int(battery / name)
+            return value / MICRO if value is not None else None
+
+        draw = self._int(battery / "power_now")
+        return SupplyReading(on_ac, read_text(battery / "status").lower(), self._int(battery / "capacity"),
+                             wh("energy_now"), wh("energy_full"), wh("energy_full_design"),
+                             self._int(battery / "cycle_count"), draw / MICRO if draw else None)
+
+
+class Snapshot:
+    """One reading of everything the panel shows."""
+
+    def __init__(self, hardware):
+        self.rpms = hardware.fan_rpms()
+        self.targets = hardware.fan_targets()
+        self.full_speed = hardware.full_speed()
+        self.max_available = hardware.max_available()
+        self.power = hardware.power_profile()
+        self.fan_mode = hardware.fan_mode()
+        self.afan = hardware.afan()
+        self.tuned = read_text(TUNED_ACTIVE_PROFILE)
+        self.fan_ceiling = read_text(FAN_CEILING_SETTING / "current_value")
+        self.fan_ceiling_max = read_text(FAN_CEILING_SETTING / "possible_values").rpartition(";")[2]
+        readings = hardware.readings
+        self.hp_zones = readings.hp_zones()
+        self.cpu = readings.cpu(hardware.cpu_celsius(), self.hp_zones.get("cpu"))
+        self.gpu_state = readings.gpu_state()
+        self.gpu = readings.gpu()
+        self.ec_zones = readings.ec_zones()
+        self.supply = readings.supply()
+
+    def effective_fan_mode(self):
+        return FOLLOWED_FAN_MODE.get(self.power) if self.fan_mode == FOLLOW else self.fan_mode
+
+
+# ─── panel ──────────────────────────────────────────────────────────────────
+
+def pad(text, width):
+    return text + " " * max(0, width - visible_len(text))
+
+
+def note(text):
+    return paint(text, MUTED)
+
+
+def format_window(seconds):
+    if seconds is None:
+        return ""
+    return f"{seconds:.0f} s" if seconds >= 1 else f"{seconds * MS_PER_S:.1f} ms"
+
+
+def degrees(celsius, width=0):
+    if celsius is None:
+        return pad(note("—"), width)
+    color = HOT if celsius >= HOT_C else ACCENT if celsius >= WARM_C else TEXT
+    return pad(paint(f"{celsius}°", color), width)
+
+
+# ─── main view ──────────────────────────────────────────────────────────────
+
+SLIDER_WIDTH = 40
+SLIDER_ENDS = ("Quieter", "Cooler")
+SLIDER_INDENT = MARGIN + " " * LABEL_WIDTH
+# Solid while the fan level is pinned, hollow while it follows the desktop power profile.
+PINNED_MARKER, FOLLOWING_MARKER = "▲", "△"
+READING_COLUMNS = (("temp", 7), ("hp", 7), ("power", 9), ("limit", 11), ("clock", 11))
+FAN_READING_WIDTH = len("  00000 rpm")
+
+
+def label_starts(labels, width):
+    """Spread the labels edge to edge: first flush left, last flush right."""
+    last = len(labels) - 1
+    return [round(index * (width - len(label)) / last) for index, label in enumerate(labels)]
+
+
+def slider_track(level, following, color):
+    """A plain line with one marker under the middle of the selected level's label."""
+    if level not in FAN_LEVELS:
+        return paint("─" * SLIDER_WIDTH, MUTED)
+    index = FAN_LEVELS.index(level)
+    position = label_starts(FAN_LEVELS, SLIDER_WIDTH)[index] + len(level) // 2
+    marker = paint(FOLLOWING_MARKER if following else PINNED_MARKER, color, bold=not following)
+    return paint("─" * position, MUTED) + marker + paint("─" * (SLIDER_WIDTH - position - 1), MUTED)
+
+
+def slider_labels(level, following, color):
+    line = ""
+    for label, start in zip(FAN_LEVELS, label_starts(FAN_LEVELS, SLIDER_WIDTH)):
+        shown = paint(label, color, bold=not following) if label == level else note(label)
+        line = pad(line, start) + shown
+    return line
+
+
+def fan_status(snapshot):
+    if snapshot.full_speed:
+        return paint("overridden by full speed", HOT)
+    if snapshot.fan_mode == FOLLOW:
+        return note(f"follows {snapshot.power}")
+    return ""
+
+
+def fan_slider(snapshot):
+    level = snapshot.effective_fan_mode()
+    following = snapshot.fan_mode == FOLLOW
+    color = LEVEL_COLOR.get(level, TEXT)
+    track = slider_track(level, following, color) + "    " + fan_status(snapshot)
+    return [
+        SLIDER_INDENT + spread(note(SLIDER_ENDS[0]), note(SLIDER_ENDS[1]), SLIDER_WIDTH),
+        row("fans", track),
+        SLIDER_INDENT + slider_labels(level, following, color),
+    ]
+
+
+def reading_row(label, cells, status=""):
+    content = "".join(pad(cell, width) for cell, (_, width) in zip(cells, READING_COLUMNS))
+    return row(label, content + status)
+
+
+def throttle_warning(percent):
+    if percent is None or percent < 1:
+        return ""
+    return paint(f"throttling {percent:.0f}%", HOT if percent >= THROTTLE_ALERT_PERCENT else CAUTION)
+
+
+def hp_degrees(celsius):
+    return note(f"{celsius}°" if celsius is not None else "—")
+
+
+def reading_rows(snapshot):
+    header = SLIDER_INDENT + "".join(paint(name.ljust(width), FAINT) for name, width in READING_COLUMNS)
+    cpu = snapshot.cpu
+    pl1 = applied_limit_w(cpu.zones, "pl1")
+    hp_gpu = hp_degrees(snapshot.hp_zones.get("gpu"))
+    rows = [header, reading_row("cpu", [
+        degrees(cpu.celsius),
+        hp_degrees(cpu.hp_celsius),
+        paint(f"{cpu.package_w:.0f} W", TEXT) if cpu.package_w is not None else note("—"),
+        paint(f"{pl1} W", TEXT) if pl1 else note("—"),
+        paint(f"{cpu.avg_ghz:.1f} GHz", TEXT) if cpu.avg_ghz else note("—"),
+    ], throttle_warning(cpu.throttle_percent))]
+    gpu = snapshot.gpu
+    if gpu is None:
+        rows.append(reading_row("gpu", [note("asleep"), hp_gpu]))
+        return rows
+    limited = paint("limited by " + ", ".join(gpu.limited_by), CAUTION) if gpu.limited_by else ""
+    rows.append(reading_row("gpu", [degrees(gpu.celsius), hp_gpu, paint(f"{gpu.draw_w} W", TEXT),
+                                    paint(f"{gpu.limit_w} W", TEXT), paint(gpu.pstate, TEXT)], limited))
+    return rows
+
+
+def gauge_span(start, end, filled, color):
+    lit = max(0, min(end, filled) - start)
+    return paint("━" * lit, color) + paint("─" * (end - start - lit), FAINT)
+
+
+def fan_gauge(rpm, target, scale, width, full_speed):
+    """One bar whose color follows the RPM level, with a tick at the target while the fan is still ramping."""
+    filled = round(min(rpm / scale, 1.0) * width)
+    color = HOT if full_speed else level_gradient(min(rpm / scale, 1.0))
+    if abs(target - rpm) <= RAMP_THRESHOLD_RPM:
+        return gauge_span(0, width, filled, color)
+    tick = min(round(min(target / scale, 1.0) * width), width - 1)
+    return gauge_span(0, tick, filled, color) + paint("│", TEXT) + gauge_span(tick + 1, width, filled, color)
+
+
+def fan_rows(snapshot, width):
+    gauge_width = width - len(SLIDER_INDENT) - FAN_READING_WIDTH
+    return [row(f"fan {index + 1}", fan_gauge(rpm, target, FAN_SCALE_RPM[index], gauge_width, snapshot.full_speed)
+                + paint(f"  {rpm:>5}", TEXT) + note(" rpm"))
+            for index, (rpm, target) in enumerate(zip(snapshot.rpms, snapshot.targets))]
+
+
+def supply_summary(supply):
+    if supply.on_ac:
+        text = "ac"
+    else:
+        text = "battery" + (f" {supply.draw_w:.0f} W" if supply.draw_w else "")
+    if supply.percent is not None:
+        text += f"  {supply.percent}%"
+    return note(text)
+
+
+def render_main(snapshot, width):
+    return fan_slider(snapshot) + [""] + reading_rows(snapshot) + [""] + fan_rows(snapshot, width)
+
+
+# ─── details view ───────────────────────────────────────────────────────────
+
+PL_KINDS = (("pl1", "long term"), ("pl2", "short term"), ("pl4", "peak"))
+RAPL_LABEL_WIDTH = 26
+RAPL_CELL_WIDTH = 26
+DETAIL_LABEL_WIDTH = 13
+DETAIL_VALUE_WIDTH = 9
+DETAIL_BLOCK_WIDTH = 40
+
+
+def rapl_cell(constraint):
+    if constraint is None:
+        return note(f"{'—':>4}")
+    window = format_window(constraint.window_s)
+    return paint(f"{constraint.watts:>4} W", TEXT) + (note(f"  {window}") if window else "")
+
+
+def rapl_rows(zones):
+    """Every RAPL limit, one column per package interface (MSR and MMIO), named by its sysfs zone."""
+    packages = sorted((zone for zone in zones if zone.is_package), key=lambda zone: zone.interface != "msr")
+    title = pad(MARGIN + paint("cpu power limits", TEXT, bold=True), len(MARGIN) + RAPL_LABEL_WIDTH)
+    header = title + "".join(pad(note(f"{zone.interface}  ") + paint(zone.zone_id, FAINT), RAPL_CELL_WIDTH)
+                             for zone in packages) + note("applies")
+    rows = [header]
+    for pl, meaning in PL_KINDS:
+        cells = "".join(pad(rapl_cell(zone.constraints.get(pl)), RAPL_CELL_WIDTH) for zone in packages)
+        applied = applied_limit_w(zones, pl)
+        rows.append(MARGIN + pad(paint(pl, TEXT) + note(f"  {meaning}"), RAPL_LABEL_WIDTH) + cells
+                    + (paint(f"{applied} W", ACCENT, bold=True) if applied else ""))
+    rated = "".join(pad(paint(f"{zone.constraints['pl1'].rated_w:>4} W", TEXT)
+                        if "pl1" in zone.constraints and zone.constraints["pl1"].rated_w else note("—"),
+                        RAPL_CELL_WIDTH) for zone in packages)
+    rows.append(MARGIN + pad(note("rated  max_power"), RAPL_LABEL_WIDTH) + rated)
+    for zone in zones:
+        if zone.is_package:
+            continue
+        limits = "   ".join(f"{pl} {constraint.watts} W  {format_window(constraint.window_s)}".rstrip()
+                            for pl, constraint in sorted(zone.constraints.items()))
+        state = note(limits) if zone.enabled else paint("disabled", FAINT)
+        rows.append(MARGIN + pad(paint(zone.name, TEXT) + paint(f"  {zone.zone_id}", FAINT), RAPL_LABEL_WIDTH)
+                    + state)
+    return rows
+
+
+def detail(label, value, unit="", highlight=False):
+    """(label, value, unit): numbers right-aligned so they line up, text left-aligned."""
+    numeric = value[:1].isdigit() or value[:1] in "-—"
+    shown = value.rjust(DETAIL_VALUE_WIDTH) if numeric else value
+    label = paint(label.ljust(DETAIL_LABEL_WIDTH), ACCENT, bold=True) if highlight else note(label.ljust(DETAIL_LABEL_WIDTH))
+    return label + paint(shown, TEXT) + (note(" " + unit) if unit else "")
+
+
+def cpu_block(cpu):
+    items = [
+        ("temp", str(cpu.celsius) if cpu.celsius is not None else "—", "°C"),
+        ("package", f"{cpu.package_w:.0f}" if cpu.package_w is not None else "—", "W"),
+        ("throttling", f"{cpu.throttle_percent:.0f}" if cpu.throttle_percent is not None else "—", "%"),
+        ("clock avg", f"{cpu.avg_ghz:.2f}" if cpu.avg_ghz else "—", "GHz"),
+        ("clock peak", f"{cpu.max_ghz:.2f}" if cpu.max_ghz else "—", "GHz"),
+        ("governor", cpu.governor or "—", ""),
+        ("epp", cpu.epp or "—", ""),
+        ("turbo", "on" if cpu.turbo else "off", ""),
+    ]
+    return "cpu", [detail(*item) for item in items]
+
+
+def gpu_block(state, gpu):
+    if gpu is None:
+        return "gpu", [detail("state", f"asleep ({state or 'none'})")]
+    items = [
+        ("limit", str(gpu.limit_w), "W"),
+        ("default", str(gpu.default_w), "W"),
+        ("max", str(gpu.max_w), "W"),
+        ("core", str(gpu.core_mhz), "MHz"),
+        ("memory", str(gpu.memory_mhz), "MHz"),
+        ("util", str(gpu.util_percent), "%"),
+        ("pstate", gpu.pstate, ""),
+        ("limited by", ", ".join(gpu.limited_by) or "nothing", ""),
+    ]
+    return "gpu", [detail(*item) for item in items]
+
+
+def fan_ceiling_detail(value, maximum):
+    if not value:
+        return detail("fan ceiling", "—")
+    if value == "0":
+        return detail("fan ceiling", "bios default")
+    return detail("fan ceiling", value, f"/ {maximum}" if maximum else "")
+
+
+def ec_block(snapshot):
+    hottest = max((celsius for _, celsius in snapshot.ec_zones), default=None)
+    lines = []
+    for name, celsius in snapshot.ec_zones:
+        # The hottest sensor sets the fan-curve step.
+        lines.append(detail(name, str(celsius), "°C", highlight=celsius == hottest))
+    lines.append(detail("afan", snapshot.afan or "—"))
+    lines.append(detail("tuned", snapshot.tuned or "—"))
+    lines.append(fan_ceiling_detail(snapshot.fan_ceiling, snapshot.fan_ceiling_max))
+    return "ec", lines
+
+
+def hp_block(hp_zones):
+    lines = [detail(label, str(celsius) if celsius is not None else "—", "°C") for label, celsius in hp_zones.items()]
+    return "hp", lines or [detail("zones", "none found")]
+
+
+def supply_block(supply):
+    items = [("source", "ac" if supply.on_ac else "battery", "")]
+    if supply.percent is not None:
+        items += [("battery", str(supply.percent), "%"), ("status", supply.status or "—", "")]
+        if supply.draw_w:
+            items.append(("draw", f"{supply.draw_w:.0f}", "W"))
+        if supply.full_wh:
+            items.append(("energy", f"{supply.energy_wh:.1f}", f"/ {supply.full_wh:.1f} Wh"))
+        if supply.design_wh and supply.full_wh:
+            items.append(("health", f"{supply.full_wh / supply.design_wh * 100:.0f}", "%"))
+        if supply.cycles is not None:
+            items.append(("cycles", str(supply.cycles), ""))
+    return "supply", [detail(*item) for item in items]
+
+
+def side_by_side(left, right):
+    """Two (title, lines) blocks next to each other."""
+    (left_title, left_lines), (right_title, right_lines) = left, right
+    rows = [MARGIN + pad(paint(left_title, TEXT, bold=True), DETAIL_BLOCK_WIDTH) + paint(right_title, TEXT, bold=True)]
+    for index in range(max(len(left_lines), len(right_lines))):
+        left_line = left_lines[index] if index < len(left_lines) else ""
+        right_line = right_lines[index] if index < len(right_lines) else ""
+        rows.append(MARGIN + pad(left_line, DETAIL_BLOCK_WIDTH) + right_line)
+    return rows
+
+
+def render_details(snapshot):
+    return (rapl_rows(snapshot.cpu.zones) + [""]
+            + side_by_side(cpu_block(snapshot.cpu), gpu_block(snapshot.gpu_state, snapshot.gpu)) + [""]
+            + side_by_side(hp_block(snapshot.hp_zones), ec_block(snapshot)) + [""]
+            + side_by_side(supply_block(snapshot.supply), ("", [])))
+
+
+class View(enum.Enum):
+    MAIN = enum.auto()
+    DETAILS = enum.auto()
+
+
+def render_panel(snapshot, width, view=View.MAIN):
+    header = spread(MARGIN + paint("zfan", TEXT, bold=True) + " " + note(VERSION), note(DEVICE_NAME), width)
+    body = render_main(snapshot, width) if view is View.MAIN else render_details(snapshot)
+    return [header, ""] + body
+
+
+# ─── interactive dashboard ──────────────────────────────────────────────────
+
+class Toast:
+    def __init__(self, text="", color=MUTED):
+        self.text, self.color = text, color
+        self.expires = time.monotonic() + TOAST_DURATION_S
+
+    def visible(self):
+        return bool(self.text) and time.monotonic() < self.expires
+
+
+class Dashboard:
+    """←→ pin a quieter or cooler fan level, f returns the fans to following the desktop power profile."""
+
+    KEYS_LEFT = {"\x1b[D", "h"}
+    KEYS_RIGHT = {"\x1b[C", "l"}
+    KEYS_FOLLOW = {"f"}
+    KEYS_QUIT = {"q", "Q", "\x1b"}
+    KEYS_DETAILS = {"i", "\t"}
+
+    def __init__(self, hardware):
+        self.hardware = hardware
+        self.running = True
+        self.view = View.MAIN
+        self.toast = Toast()
+        self.refresh()
+
+    def refresh(self):
+        self.snapshot = Snapshot(self.hardware)
+
+    def notify(self, text, color):
+        self.toast = Toast(text, color)
+
+    def step_fan_level(self, step):
+        """Moving the slider pins the fans, so it also ends following."""
+        level = self.snapshot.effective_fan_mode()
+        index = FAN_LEVELS.index(level) if level in FAN_LEVELS else FAN_LEVELS.index("auto")
+        target = FAN_LEVELS[max(0, min(index + step, len(FAN_LEVELS) - 1))]
+        if target == self.snapshot.fan_mode:
+            return
+        self._set_fan_mode(target, f"✓ fans {target}")
+
+    def follow_power_profile(self):
+        if self.snapshot.fan_mode == FOLLOW:
+            return
+        self._set_fan_mode(FOLLOW, f"✓ fans follow {self.snapshot.power}")
+
+    def _set_fan_mode(self, mode, success):
+        try:
+            self.hardware.set_fan_mode(mode)
+        except FanError as error:
+            self.notify(f"✗ {error.message}", HOT)
+            return
+        self.refresh()
+        self.notify(success, ACCENT)
+
+    def handle_key(self, key):
+        if key in self.KEYS_QUIT:
+            self.running = False
+        elif key in self.KEYS_DETAILS:
+            self.view = View.DETAILS if self.view is View.MAIN else View.MAIN
+        elif self.view is View.DETAILS:
+            return
+        elif key in self.KEYS_LEFT:
+            self.step_fan_level(-1)
+        elif key in self.KEYS_RIGHT:
+            self.step_fan_level(1)
+        elif key in self.KEYS_FOLLOW:
+            self.follow_power_profile()
+
+    def render(self, columns, rows):
+        if columns < MIN_WIDTH:
+            return "\n" + MARGIN + paint(f"widen the terminal to {MIN_WIDTH} columns", MUTED)
+        width = min(columns, MAX_WIDTH)
+        panel = render_panel(self.snapshot, width, self.view)
+        lines = [""] + panel + ["", self._footer(width)]
+        if len(lines) + 1 > rows:
+            return "\n" + MARGIN + paint(f"make the terminal at least {len(lines) + 1} rows tall", MUTED)
+        return "\n".join(lines)
+
+    def _footer(self, width):
+        def hint(key, label):
+            return paint(key, TEXT, bold=True) + " " + paint(label, MUTED)
+
+        if self.view is View.DETAILS:
+            keys = [hint("i", "back"), hint("q", "quit")]
+        else:
+            keys = [hint("←→", "fans")]
+            if self.snapshot.fan_mode != FOLLOW:
+                keys.append(hint("f", "follow"))
+            keys += [hint("i", "details"), hint("q", "quit")]
+        footer = spread(MARGIN + supply_summary(self.snapshot.supply), "  ".join(keys), width)
+        message = paint(self.toast.text, self.toast.color) if self.toast.visible() else ""
+        return footer + "\n" + MARGIN + message
+
+
+class Terminal:
+    """Alternate screen with raw keys; always restores the terminal."""
+
+    def __enter__(self):
+        self.fd = sys.stdin.fileno()
+        self.saved = termios.tcgetattr(self.fd)
+        tty.setcbreak(self.fd)
+        signal.signal(signal.SIGTERM, lambda *_: sys.exit(0))
+        sys.stdout.write("\x1b[?1049h\x1b[?25l")
+        return self
+
+    def __exit__(self, *exc):
+        termios.tcsetattr(self.fd, termios.TCSADRAIN, self.saved)
+        sys.stdout.write("\x1b[?25h\x1b[?1049l")
+        sys.stdout.flush()
+
+    def read_keys(self, timeout):
+        """Keys typed since the last call; arrow-key escape sequences stay whole."""
+        ready, _, _ = select.select([self.fd], [], [], timeout)
+        if not ready:
+            return []
+        data = os.read(self.fd, 64).decode(errors="ignore")
+        keys = []
+        while data:
+            length = 3 if data.startswith("\x1b[") else 1
+            keys.append(data[:length])
+            data = data[length:]
+        return keys
+
+    @staticmethod
+    def draw(text):
+        sys.stdout.write("\x1b[H" + text.replace("\n", "\x1b[K\n") + "\x1b[K\x1b[J")
+        sys.stdout.flush()
+
+
+def run_dashboard(hardware):
+    dashboard = Dashboard(hardware)
+    next_refresh = time.monotonic() + SENSOR_REFRESH_S
+    with Terminal() as terminal:
+        while dashboard.running:
+            size = shutil.get_terminal_size((80, 24))
+            terminal.draw(dashboard.render(size.columns, size.lines))
+            for key in terminal.read_keys(FRAME_INTERVAL_S):
+                dashboard.handle_key(key)
+            if time.monotonic() >= next_refresh:
+                dashboard.refresh()
+                next_refresh = time.monotonic() + SENSOR_REFRESH_S
+
+
+# ─── doctor ─────────────────────────────────────────────────────────────────
+
+MODULE_NAME = "hp_zbook_fury_fan"
+DKMS_PACKAGE = "hp-zbook-fury-fan"
+DRIVER_NAME = "hp-zbook-fury-fan"
+SUPPORTED_BOARD = "8DE2"
+# The ACPI override is a copy of this BIOS version's SSDT33.
+OVERRIDE_BUILT_FOR_BIOS = "01.05.01"
+OVERRIDE_TABLE_DIR = Path("/etc/hp-zbook-fury-fan/acpi")
+OVERRIDE_DRACUT_CONF = Path("/etc/dracut.conf.d/90-hp-zbook-fury-fan-acpi.conf")
+MODULES_LOAD_CONF = Path("/etc/modules-load.d/hp-zbook-fury-fan.conf")
+UDEV_RULE = Path("/etc/udev/rules.d/70-hp-zbook-fury-fan.rules")
+AFAN_RESTORE_LOG = "AFAN was"
+FROM_PROJECT = "   (in the project directory)"
+
+
+class Health(enum.Enum):
+    OK = ("✓", ACCENT)
+    INFO = ("○", MUTED)
+    WARN = ("!", ACCENT)
+    FAIL = ("✗", HOT)
+
+
+class Finding:
+    def __init__(self, label, health, detail, fix=None):
+        self.label, self.health, self.detail, self.fix = label, health, detail, fix
+
+
+def find_driver_hwmon():
+    for name_file in Path("/sys/class/hwmon").glob("hwmon*/name"):
+        if read_text(name_file) == HWMON_NAME:
+            return name_file.parent
+    return None
+
+
+def kernel_log_this_boot():
+    return run(["journalctl", "-k", "-b", "-o", "cat", "--no-pager"])
+
+
+def check_hardware():
+    board = read_text("/sys/class/dmi/id/board_name")
+    bios = read_text("/sys/class/dmi/id/bios_version")
+    if board != SUPPORTED_BOARD:
+        return Finding("hardware", Health.FAIL, f"board {board or 'unknown'}",
+                       f"zfan supports only the ZBook Fury G1i (board {SUPPORTED_BOARD})")
+    return Finding("hardware", Health.OK, f"ZBook Fury G1i · {bios}")
+
+
+def check_driver(hwmon):
+    loaded = read_text(f"/sys/module/{MODULE_NAME}/version")
+    installed = run(["modinfo", "-F", "version", MODULE_NAME])
+    if not installed:
+        return Finding("driver", Health.FAIL, "not installed for this kernel",
+                       "sudo ./install.sh" + FROM_PROJECT)
+    if not loaded or not hwmon:
+        return Finding("driver", Health.FAIL, f"{installed} installed but not loaded",
+                       f"sudo modprobe {MODULE_NAME}; then: journalctl -k -b | grep -i fury")
+    if loaded != installed:
+        return Finding("driver", Health.WARN, f"{loaded} loaded, {installed} installed",
+                       f"sudo modprobe -r {MODULE_NAME} && sudo modprobe {MODULE_NAME}")
+    return Finding("driver", Health.OK, f"{loaded} loaded")
+
+
+def check_kernel_build():
+    kernel = os.uname().release
+    if "installed" in run(["dkms", "status", DKMS_PACKAGE, "-k", kernel]):
+        return Finding("kernel", Health.OK, f"DKMS build for {kernel}")
+    return Finding("kernel", Health.FAIL, f"no DKMS build for {kernel}",
+                   f"sudo dkms autoinstall -k {kernel}   (needs kernel-devel for this kernel)")
+
+
+def check_boot_loading():
+    if MODULES_LOAD_CONF.exists():
+        return Finding("boot", Health.OK, "loads at boot")
+    return Finding("boot", Health.WARN, "not loaded automatically at boot", "sudo ./install.sh" + FROM_PROJECT)
+
+
+def check_permissions(hwmon):
+    if not hwmon:
+        return Finding("permissions", Health.INFO, "needs the driver")
+    energy = SystemReadings._find_package_zone()
+    if energy and not os.access(energy / "energy_uj", os.R_OK):
+        return Finding("permissions", Health.WARN, "CPU package power hidden (energy counter is root-only)",
+                       "sudo ./install.sh" + FROM_PROJECT + "   (and make sure you are in the wheel group)")
+    if os.access(hwmon / "pwm1_enable", os.W_OK) and os.access(hwmon / "device" / "fan_mode", os.W_OK):
+        return Finding("permissions", Health.OK, "fan controls and CPU power readable without sudo")
+    if not UDEV_RULE.exists():
+        return Finding("permissions", Health.WARN, "fan controls need sudo", "sudo ./install.sh" + FROM_PROJECT)
+    return Finding("permissions", Health.WARN, "udev rule present but not applied",
+                   "sudo udevadm trigger --action=add --subsystem-match=hwmon --attr-match=name=hp_zbook_fury"
+                   "  (and make sure you are in the wheel group)")
+
+
+def check_profiles():
+    owners = [read_text(name) for name in Path("/sys/class/platform-profile").glob("*/name")]
+    if DRIVER_NAME not in owners:
+        return Finding("profiles", Health.FAIL, "fan profiles not registered", "load the driver first")
+    active = run(["busctl", "--system", "get-property", "net.hadess.PowerProfiles",
+                  "/net/hadess/PowerProfiles", "net.hadess.PowerProfiles", "ActiveProfile"])
+    if not active:
+        return Finding("profiles", Health.WARN, "no power-profile service; desktop switch will not drive the fans",
+                       "sudo systemctl enable --now tuned-ppd   (or power-profiles-daemon)")
+    desktop = active.split('"')[1] if '"' in active else active
+    platform = read_text(PLATFORM_PROFILE)
+    expected = {v: k for k, v in DESKTOP_PROFILES.items()}.get(desktop)
+    if expected and expected != platform:
+        return Finding("profiles", Health.WARN, f"desktop says {desktop}, fans are on {platform}",
+                       "switch the desktop power mode once")
+    return Finding("profiles", Health.OK, f"desktop {desktop} → driver {platform}")
+
+
+def check_fans(hwmon):
+    if not hwmon:
+        return Finding("fans", Health.INFO, "needs the driver")
+    rpms = [int(read_text(hwmon / f"fan{i}_input") or 0) for i in range(1, FAN_COUNT + 1)]
+    readings = " · ".join(str(rpm) for rpm in rpms) + " rpm"
+    if any(rpm == 0 for rpm in rpms):
+        return Finding("fans", Health.WARN, readings + " (a fan reports 0)",
+                       "a stopped fan can be normal at idle; if it persists under load, check the hardware")
+    return Finding("fans", Health.OK, readings)
+
+
+def check_max_speed(hwmon):
+    installed = OVERRIDE_DRACUT_CONF.exists() and any(OVERRIDE_TABLE_DIR.glob("*.aml"))
+    bios = read_text("/sys/class/dmi/id/bios_version")
+    if installed and OVERRIDE_BUILT_FOR_BIOS not in bios:
+        return Finding("max speed", Health.FAIL,
+                       f"ACPI override was built for BIOS {OVERRIDE_BUILT_FOR_BIOS}, this is {bios}",
+                       "sudo ./acpi-override/remove-acpi-override.sh, then reboot" + FROM_PROJECT)
+    if not hwmon:
+        return Finding("max speed", Health.INFO, "needs the driver")
+    if read_text(hwmon / "device" / "fan_max_available") == "1":
+        return Finding("max speed", Health.OK, "full speed reaches hardware maximum (fans 1, 3)")
+    return Finding("max speed", Health.INFO, "full speed locked: the EC drops host fan overrides; boost is the max")
+
+
+def check_firmware_resets(kernel_log):
+    if not kernel_log:
+        return Finding("firmware", Health.INFO, "kernel log not readable (add yourself to wheel or adm)")
+    resets = kernel_log.count(AFAN_RESTORE_LOG)
+    if resets:
+        return Finding("firmware", Health.INFO, f"firmware reset the fan mode {resets}× this boot; the driver restored it")
+    return Finding("firmware", Health.OK, "no fan-mode resets this boot")
+
+
+def diagnose():
+    hwmon = find_driver_hwmon()
+    kernel_log = kernel_log_this_boot()
+    return [
+        check_hardware(),
+        check_driver(hwmon),
+        check_kernel_build(),
+        check_boot_loading(),
+        check_permissions(hwmon),
+        check_profiles(),
+        check_fans(hwmon),
+        check_max_speed(hwmon),
+        check_firmware_resets(kernel_log),
+    ]
+
+
+def print_doctor():
+    findings = diagnose()
+    print()
+    print(MARGIN + paint("zfan doctor", TEXT, bold=True))
+    print()
+    for finding in findings:
+        symbol, color = finding.health.value
+        print(row(finding.label, paint(symbol, color, bold=True) + " " + paint(finding.detail, TEXT)))
+        if finding.fix and finding.health is not Health.OK:
+            print(row("", paint("  → " + finding.fix, MUTED)))
+    problems = [f for f in findings if f.health in (Health.WARN, Health.FAIL)]
+    print()
+    if problems:
+        print(MARGIN + paint(f"{len(problems)} to look at · fixes above", HOT if any(
+            f.health is Health.FAIL for f in problems) else ACCENT))
+    else:
+        print(MARGIN + paint("all good", ACCENT))
+    print()
+    return 1 if any(f.health is Health.FAIL for f in findings) else 0
+
+
+# ─── script commands ────────────────────────────────────────────────────────
+
+STATUS_SAMPLE_S = 0.5
+
+
+def print_status(hardware, view=View.MAIN):
+    width = min(shutil.get_terminal_size((MAX_WIDTH, 20)).columns, MAX_WIDTH)
+    Snapshot(hardware)  # primes the rate meters (CPU power, throttling)
+    time.sleep(STATUS_SAMPLE_S)
+    print("\n".join(render_panel(Snapshot(hardware), width, view)))
+
+
+def confirm(message):
+    print(MARGIN + paint("✓ ", ACCENT) + message)
+
+
+def print_error(error):
+    print(MARGIN + paint("✗ ", HOT) + error.message, file=sys.stderr)
+    if error.hint:
+        print(MARGIN + "  " + paint(error.hint, MUTED), file=sys.stderr)
+
+
+def help_text():
+    def entry(command, description):
+        return MARGIN + paint(command.ljust(30), TEXT) + paint(description, MUTED)
+
+    return "\n".join([
+        "",
+        MARGIN + paint("zfan", TEXT, bold=True) + " " + note(VERSION)
+        + paint("  fan control for the HP ZBook Fury G1i", MUTED),
+        "",
+        entry("zfan", "interactive dashboard"),
+        entry("zfan status", "one-shot status"),
+        entry("zfan details", "one-shot details: every power limit, clocks, HP and EC sensors, battery"),
+        entry("zfan doctor", "check the setup and suggest fixes"),
+        entry("zfan fans <mode>", "follow (the desktop power profile) · quiet · auto · boost"),
+        entry("zfan max [off]", "full fan speed on or off"),
+        entry("zfan --version", "print the version"),
+        "",
+    ])
+
+
+def interactive():
+    return sys.stdin.isatty() and sys.stdout.isatty()
+
+
+def choice(argv, options, what):
+    value = argv[2] if len(argv) > 2 else None
+    if value not in options:
+        raise FanError(f"{what}: choose one of {', '.join(options)}", "see zfan --help")
+    return value
+
+
+def run_command(hardware, argv):
+    command = argv[1] if len(argv) > 1 else ("dashboard" if interactive() else "status")
+    if command == "dashboard":
+        run_dashboard(hardware)
+    elif command == "status":
+        print_status(hardware)
+    elif command == "details":
+        print_status(hardware, View.DETAILS)
+    elif command == "fans":
+        mode = choice(argv, FAN_MODES, "fans")
+        hardware.set_fan_mode(mode)
+        confirm(f"fans {mode}")
+    elif command == "max":
+        enabled = argv[2:] != ["off"]
+        hardware.set_full_speed(enabled)
+        confirm("full speed on" if enabled else "full speed off")
+    else:
+        raise FanError(f"unknown command '{command}'", "see zfan --help")
+
+
+def main(argv):
+    if argv[1:2] in (["-h"], ["--help"], ["help"]):
+        print(help_text())
+        return 0
+    if argv[1:2] in (["-V"], ["--version"], ["version"]):
+        print(f"zfan {VERSION}")
+        return 0
+    if argv[1:2] == ["doctor"]:
+        return print_doctor()
+    try:
+        run_command(FanHardware(), argv)
+    except FanError as error:
+        print_error(error)
+        return 1
+    except KeyboardInterrupt:
+        return 130
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv))

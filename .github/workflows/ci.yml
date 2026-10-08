@@ -1,0 +1,59 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  version:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Versions agree
+        run: tools/check-version.sh
+
+  cli:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        python: ["3.10", "3.13"]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python }}
+      - name: Compile
+        run: python -m py_compile cli/zfan
+      - name: Runs without the driver
+        run: |
+          python cli/zfan --version
+          python cli/zfan --help
+          # No hp_zbook_fury hwmon on the runner: status must fail cleanly with a hint, not a traceback.
+          if python cli/zfan status 2> err.txt; then exit 1; fi
+          cat err.txt
+          ! grep -q Traceback err.txt
+
+  shell:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: ShellCheck
+        run: shellcheck install.sh tools/*.sh
+
+  driver:
+    runs-on: ubuntu-latest
+    # Build against Fedora's current kernel headers, the distribution this driver targets.
+    container: fedora:latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install kernel headers
+        run: dnf install -y --setopt=install_weak_deps=False gcc make kernel-devel elfutils-libelf-devel
+      - name: Build module
+        run: |
+          kdir=$(ls -d /usr/src/kernels/* | sort -V | tail -1)
+          make -C driver KDIR="$kdir" W=1
+          modinfo -F version driver/hp_zbook_fury_fan.ko

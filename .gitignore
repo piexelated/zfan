@@ -1,0 +1,25 @@
+# Kernel module build output
+*.o
+*.ko
+*.mod
+*.mod.c
+.*.cmd
+.module-common.o
+Module.symvers
+modules.order
+
+# Python
+__pycache__/
+
+# Local research and lab material: HP firmware, HP's ACPI tables, service guide and machine logs.
+# Kept on disk, never published.
+/firmware-research/
+/acpi-override/
+/runtime-probe/
+/acpi-call-build/
+/acpi-call-maintained/
+/dsdt.*
+/dsdt-disassembly.log
+/*.txt
+/*.log
+/investigation.md
