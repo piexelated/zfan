@@ -79,7 +79,7 @@ The power mode is the desktop one (quick settings; CPU tuning via tuned); zfan d
 shows who sets the fan level. With **power mode** (the default) the fans switch with it like HP's own mode table
 does: power saver → auto, balanced → auto, performance → boost; the row shows the pair in use, e.g.
 `balanced → auto`, and the slider marker is hollow. With **manual** the level you pinned stays, whatever the power
-mode (solid marker).
+mode (solid marker). zfan remembers the choice across reboots and updates (`/etc/zfan/fan-mode`).
 
 | Fan mode | Fans |
 |---|---|

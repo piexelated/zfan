@@ -26,6 +26,9 @@ from pathlib import Path
 VERSION = "0.5.0"
 HWMON_NAME = "hp_zbook_fury"
 PLATFORM_PROFILE = Path("/sys/firmware/acpi/platform_profile")
+# The driver starts in follow on every load; the udev rule writes this file back into it. install.sh makes it
+# writable for the admin group.
+SAVED_FAN_MODE = Path("/etc/zfan/fan-mode")
 DMI = Path("/sys/class/dmi/id")
 DEVICE_NAME = "hp zbook fury g1i"
 FAN_COUNT = 3
@@ -225,6 +228,15 @@ class FanHardware:
 
     def set_fan_mode(self, mode):
         self._write(self.device / "fan_mode", mode, "fan mode")
+        self._save_fan_mode(mode)
+
+    @staticmethod
+    def _save_fan_mode(mode):
+        """Best effort: without install.sh's file the mode lasts until the driver reloads; doctor reports that."""
+        try:
+            SAVED_FAN_MODE.write_text(mode + "\n")
+        except OSError:
+            pass
 
 
 POWERCAP = Path("/sys/class/powercap")
@@ -1168,6 +1180,16 @@ def check_permissions(hwmon):
                    "  (and make sure you are in the wheel or sudo group)")
 
 
+def check_saved_fan_mode():
+    if not SAVED_FAN_MODE.exists():
+        return Finding("reboots", Health.WARN, "fan mode resets to power mode at every boot",
+                       "sudo ./install.sh" + FROM_PROJECT)
+    if not os.access(SAVED_FAN_MODE, os.W_OK):
+        return Finding("reboots", Health.WARN, f"can't save the fan mode to {SAVED_FAN_MODE} without sudo",
+                       "make sure you are in the wheel or sudo group")
+    return Finding("reboots", Health.OK, f"fan mode kept across reboots ({read_text(SAVED_FAN_MODE)})")
+
+
 def check_profiles():
     owners = [read_text(name) for name in Path("/sys/class/platform-profile").glob("*/name")]
     if DRIVER_NAME not in owners:
@@ -1238,6 +1260,7 @@ def diagnose():
         check_kernel_build(),
         check_boot_loading(),
         check_permissions(hwmon),
+        check_saved_fan_mode(),
         check_profiles(),
         check_fans(hwmon),
         check_max_speed(hwmon),

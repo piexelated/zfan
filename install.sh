@@ -13,6 +13,8 @@ MIN_KERNEL=6.14
 KERNEL=$(uname -r)
 REQUIRED_COMMANDS="dkms make gcc python3 udevadm modprobe"
 DKMS_SIGNING_KEY=/var/lib/dkms/mok.pub
+# zfan saves the fan mode here; the udev rule restores it when the driver loads.
+SAVED_FAN_MODE=/etc/zfan/fan-mode
 
 fail() {
 	echo "install.sh: $1" >&2
@@ -98,6 +100,14 @@ install_boot_integration() {
 	udevadm control --reload
 }
 
+install_saved_fan_mode() {
+	install -d -m 755 "$(dirname "$SAVED_FAN_MODE")"
+	# Keep the saved choice across reinstalls and updates.
+	[ -f "$SAVED_FAN_MODE" ] || echo follow >"$SAVED_FAN_MODE"
+	chgrp "$1" "$SAVED_FAN_MODE"
+	chmod 664 "$SAVED_FAN_MODE"
+}
+
 install_cli() {
 	install -m 755 cli/zfan /usr/local/bin/zfan
 	# The CLI used to be called furyfan.
@@ -133,6 +143,7 @@ require_build_tools
 group=$(admin_group)
 
 install_driver
+install_saved_fan_mode "$group"
 install_boot_integration "$group"
 install_cli
 load_driver
