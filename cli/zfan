@@ -5,6 +5,7 @@ Run without arguments for the interactive dashboard; subcommands are for scripts
 """
 
 import enum
+import hashlib
 import json
 import os
 import select
@@ -12,6 +13,8 @@ import shutil
 import signal
 import subprocess
 import sys
+import tarfile
+import tempfile
 import termios
 import time
 import tty
@@ -941,6 +944,95 @@ def run_dashboard(hardware):
                 next_refresh = time.monotonic() + SENSOR_REFRESH_S
 
 
+# ─── updates ────────────────────────────────────────────────────────────────
+
+GITHUB_REPO = "RePixelatedMC/zfan"
+RELEASES_PAGE = f"https://github.com/{GITHUB_REPO}/releases"
+LATEST_RELEASE_URL = f"https://api.github.com/repos/{GITHUB_REPO}/releases/latest"
+RELEASE_CHECK_TIMEOUT_S = 3
+RELEASE_DOWNLOAD_TIMEOUT_S = 60
+
+
+class Release:
+    def __init__(self, version, assets):
+        self.version = version
+        self.assets = assets  # file name → download URL
+        self.archive = f"zfan-{version}.tar.gz"
+        self.checksum = self.archive + ".sha256"
+        # git archive's --prefix in the release workflow.
+        self.source_dir = f"zfan-{version}"
+
+
+def fetch(url, timeout):
+    request = urllib.request.Request(url, headers={"User-Agent": f"zfan/{VERSION}"})
+    with urllib.request.urlopen(request, timeout=timeout) as response:
+        return response.read()
+
+
+def latest_release():
+    """The newest GitHub release, or None when GitHub is unreachable or nothing is published."""
+    try:
+        release = json.loads(fetch(LATEST_RELEASE_URL, RELEASE_CHECK_TIMEOUT_S))
+    except (OSError, ValueError):
+        return None
+    version = release.get("tag_name", "").removeprefix("v")
+    if not version:
+        return None
+    return Release(version, {asset["name"]: asset["browser_download_url"] for asset in release.get("assets", [])})
+
+
+def version_key(version):
+    try:
+        return tuple(int(part) for part in version.split("."))
+    except ValueError:
+        return None
+
+
+def is_newer(version):
+    current, candidate = version_key(VERSION), version_key(version)
+    return bool(current and candidate and candidate > current)
+
+
+def download_release(release, workdir):
+    """Download and verify the release source, unpack it into workdir and return the source directory."""
+    if release.archive not in release.assets or release.checksum not in release.assets:
+        raise FanError(f"release {release.version} has no source archive", RELEASES_PAGE)
+    try:
+        archive = fetch(release.assets[release.archive], RELEASE_DOWNLOAD_TIMEOUT_S)
+        expected = fetch(release.assets[release.checksum], RELEASE_CHECK_TIMEOUT_S).decode().split()[0]
+    except (OSError, IndexError, UnicodeDecodeError):
+        raise FanError("download failed", "check your connection and try again") from None
+    if hashlib.sha256(archive).hexdigest() != expected:
+        raise FanError("download is corrupted (checksum mismatch)", "try again, or download it from " + RELEASES_PAGE)
+    archive_path = workdir / release.archive
+    archive_path.write_bytes(archive)
+    with tarfile.open(archive_path) as tar:
+        # The "data" filter refuses absolute paths, links out of workdir and device files.
+        tar.extractall(workdir, filter="data")
+    return workdir / release.source_dir
+
+
+def run_installer(source_dir):
+    command = ["sh", "install.sh"] if os.geteuid() == 0 else ["sudo", "sh", "install.sh"]
+    if subprocess.run(command, cwd=source_dir).returncode != 0:
+        raise FanError("install failed", "see the messages above")
+
+
+def update():
+    if not hasattr(tarfile, "data_filter"):
+        raise FanError("this Python is too old to unpack updates safely", "update Python (3.10.12+, 3.11.4+ or 3.12+)")
+    release = latest_release()
+    if release is None:
+        raise FanError("couldn't find a release on GitHub", "check your connection, or see " + RELEASES_PAGE)
+    if not is_newer(release.version):
+        confirm(f"zfan {VERSION} is the latest")
+        return
+    print(MARGIN + paint(f"updating zfan {VERSION} → {release.version}", TEXT))
+    with tempfile.TemporaryDirectory(prefix="zfan-update-") as workdir:
+        run_installer(download_release(release, Path(workdir)))
+    confirm(f"updated to {release.version}")
+
+
 # ─── doctor ─────────────────────────────────────────────────────────────────
 
 MODULE_NAME = "hp_zbook_fury_fan"
@@ -955,10 +1047,6 @@ MODULES_LOAD_CONF = Path("/etc/modules-load.d/hp-zbook-fury-fan.conf")
 UDEV_RULE = Path("/etc/udev/rules.d/70-hp-zbook-fury-fan.rules")
 AFAN_RESTORE_LOG = "AFAN was"
 FROM_PROJECT = "   (in the project directory)"
-GITHUB_REPO = "RePixelatedMC/zfan"
-LATEST_RELEASE_URL = f"https://api.github.com/repos/{GITHUB_REPO}/releases/latest"
-UPDATE_CHECK_TIMEOUT_S = 3
-UPDATE_COMMAND = "git pull && sudo ./install.sh"
 
 
 class Health(enum.Enum):
@@ -1093,33 +1181,13 @@ def check_firmware_resets(kernel_log):
     return Finding("firmware", Health.OK, "no fan-mode resets this boot")
 
 
-def latest_release():
-    """Version of the newest GitHub release, or None when GitHub is unreachable or nothing is published."""
-    request = urllib.request.Request(LATEST_RELEASE_URL, headers={
-        "Accept": "application/vnd.github+json", "User-Agent": f"zfan/{VERSION}"})
-    try:
-        with urllib.request.urlopen(request, timeout=UPDATE_CHECK_TIMEOUT_S) as response:
-            tag = json.load(response).get("tag_name", "")
-    except (OSError, ValueError):
-        return None
-    return tag.removeprefix("v") or None
-
-
-def version_key(version):
-    try:
-        return tuple(int(part) for part in version.split("."))
-    except ValueError:
-        return None
-
-
 def check_update():
-    latest = latest_release()
-    if latest is None:
+    release = latest_release()
+    if release is None:
         return Finding("updates", Health.INFO, "couldn't check GitHub releases (offline or none published)")
-    current, newest = version_key(VERSION), version_key(latest)
-    if not newest or not current or newest <= current:
+    if not is_newer(release.version):
         return Finding("updates", Health.OK, f"{VERSION} is the latest")
-    return Finding("updates", Health.WARN, f"{latest} available, this is {VERSION}", UPDATE_COMMAND + FROM_PROJECT)
+    return Finding("updates", Health.WARN, f"{release.version} available, this is {VERSION}", "zfan update")
 
 
 def diagnose():
@@ -1197,6 +1265,7 @@ def help_text():
         entry("zfan doctor", "check the setup and suggest fixes"),
         entry("zfan fans <mode>", "follow (the desktop power profile) · quiet · auto · boost"),
         entry("zfan max [off]", "full fan speed on or off"),
+        entry("zfan update", "install the latest release (asks for your password)"),
         entry("zfan --version", "print the version"),
         "",
     ])
@@ -1233,6 +1302,17 @@ def run_command(hardware, argv):
         raise FanError(f"unknown command '{command}'", "see zfan --help")
 
 
+def run_without_hardware(command):
+    try:
+        command()
+    except FanError as error:
+        print_error(error)
+        return 1
+    except KeyboardInterrupt:
+        return 130
+    return 0
+
+
 def main(argv):
     if argv[1:2] in (["-h"], ["--help"], ["help"]):
         print(help_text())
@@ -1242,6 +1322,9 @@ def main(argv):
         return 0
     if argv[1:2] == ["doctor"]:
         return print_doctor()
+    if argv[1:2] == ["update"]:
+        # Works without the driver, so a broken install can update itself.
+        return run_without_hardware(update)
     try:
         run_command(FanHardware(), argv)
     except FanError as error:

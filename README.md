@@ -92,12 +92,21 @@ For scripts:
 | `zfan doctor` | check driver, boot setup, permissions, power profiles, fans, full speed and updates; prints a fix for each problem |
 | `zfan fans follow\|quiet\|auto\|boost` | set the fan mode |
 | `zfan max` / `zfan max off` | full fan speed on / off |
+| `zfan update` | install the latest release; asks for your password |
 | `zfan --version` | print the version |
 
 The desktop power-mode switch (tuned-ppd or power-profiles-daemon) drives the same profiles. `sensors` shows the fan speeds.
 
-`zfan doctor` is the only command that goes online: it asks GitHub for the latest release (one request, 3 s timeout)
-and also warns when the loaded driver and zfan are different versions. Update with `git pull && sudo ./install.sh`.
+## Updates
+
+```sh
+zfan update
+```
+
+downloads the latest [release](https://github.com/RePixelatedMC/zfan/releases), checks its SHA-256, and runs its
+`install.sh` through `sudo` (driver and CLI together). It doesn't need the cloned folder. `zfan doctor` tells you
+when a release is out and warns when the loaded driver and zfan are different versions. Only these two commands go
+online; the dashboard never does.
 
 ## Full speed is locked (for now)
 
