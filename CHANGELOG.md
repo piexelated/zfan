@@ -31,7 +31,8 @@ All notable changes to this project. Versions follow [Semantic Versioning](https
 ### Removed
 
 - Power profile control (`furyfan power`): the desktop power mode already drives it.
-- Full speed from the dashboard while the EC locks it (`zfan max` remains for scripts).
+- Full speed (`zfan max`, the driver's `pwm1_enable` and its EC fan overrides): the EC drops host overrides on this
+  BIOS, so boost is the maximum.
 
 ## [0.4.2]
 

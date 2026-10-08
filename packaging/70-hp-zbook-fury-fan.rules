@@ -1,6 +1,6 @@
 # install.sh fills in the group: wheel, or sudo where there is no wheel group.
-# Let members of @ADMIN_GROUP@ switch full fan speed (pwm1_enable) and the fan mode without sudo.
-ACTION=="add", SUBSYSTEM=="hwmon", ATTR{name}=="hp_zbook_fury", RUN+="/usr/bin/chgrp @ADMIN_GROUP@ /sys%p/pwm1_enable /sys%p/device/fan_mode", RUN+="/usr/bin/chmod g+w /sys%p/pwm1_enable /sys%p/device/fan_mode"
+# Let members of @ADMIN_GROUP@ change the fan mode without sudo.
+ACTION=="add", SUBSYSTEM=="hwmon", ATTR{name}=="hp_zbook_fury", RUN+="/usr/bin/chgrp @ADMIN_GROUP@ /sys%p/device/fan_mode", RUN+="/usr/bin/chmod g+w /sys%p/device/fan_mode"
 # The driver starts in follow on every load; restore the fan mode zfan saved (power mode or a pinned level).
 ACTION=="add", SUBSYSTEM=="hwmon", ATTR{name}=="hp_zbook_fury", RUN+="/bin/sh -c '[ -r /etc/zfan/fan-mode ] && cat /etc/zfan/fan-mode > /sys%p/device/fan_mode || true'"
 # Let members of @ADMIN_GROUP@ read CPU package energy (RAPL) so zfan can show package power.

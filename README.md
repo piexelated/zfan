@@ -93,9 +93,8 @@ For scripts:
 |---|---|
 | `zfan status` | one-shot status (also used automatically when output is not a terminal) |
 | `zfan details` | one-shot details view |
-| `zfan doctor` | check driver, boot setup, permissions, power profiles, fans, full speed and updates; prints a fix for each problem |
+| `zfan doctor` | check driver, boot setup, permissions, power profiles, fans and updates; prints a fix for each problem |
 | `zfan fans follow\|quiet\|auto\|boost` | set the fan mode |
-| `zfan max` / `zfan max off` | full fan speed on / off |
 | `zfan update` | install the latest release; asks for your password |
 | `zfan --version` | print the version |
 
@@ -111,16 +110,6 @@ downloads the latest [release](https://github.com/piexelated/zfan/releases), che
 `install.sh` through `sudo` (driver and CLI together). It doesn't need the cloned folder. `zfan doctor` tells you
 when a release is out and warns when the loaded driver and zfan are different versions. Only these two commands go
 online; the dashboard never does.
-
-## Full speed is locked (for now)
-
-Full speed means driving fans 1 and 3 to hardware maximum through the EC's host overrides (fan 2 has none). On BIOS
-01.05.01 a BIOS driver locks those overrides before Linux starts, and nothing Linux can send unlocks them. The
-driver checks at load and on resume whether the EC accepts an override; while it doesn't, `zfan max` refuses and
-boost is the maximum. The dashboard leaves full speed out until it works.
-
-The driver only ever writes "maximum" or "release" to the EC, never a slower speed, and the EC's emergency fan and
-throttling protection stays active.
 
 ## Layout
 

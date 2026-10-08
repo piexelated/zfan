@@ -37,9 +37,6 @@ FAN_SCALE_RPM = (6500, 6500, 8500)
 # Mark a fan's target on its bar while the fan is still this far from it.
 RAMP_THRESHOLD_RPM = 150
 
-PWM_FULL_SPEED = "0"
-PWM_FAN_MODE = "2"
-
 # Desktop power profile name for each platform profile (net.hadess.PowerProfiles).
 DESKTOP_PROFILES = {"quiet": "power-saver", "balanced": "balanced", "performance": "performance"}
 FOLLOW = "follow"
@@ -81,10 +78,6 @@ class FanError(Exception):
         super().__init__(message)
         self.message = message
         self.hint = hint
-
-
-LOCKED = FanError("full speed is locked: the EC drops host fan overrides this boot",
-                  "boost is the maximum for now: zfan fans boost")
 
 
 # ─── styling ────────────────────────────────────────────────────────────────
@@ -188,14 +181,6 @@ class FanHardware:
     def fan_targets(self):
         return self._read_fans("target")
 
-    def full_speed(self):
-        return (self.hwmon / "pwm1_enable").read_text().strip() == PWM_FULL_SPEED
-
-    def max_available(self):
-        """True when full speed reaches hardware maximum; False while the EC locks overrides."""
-        flag = self.device / "fan_max_available"
-        return flag.exists() and flag.read_text().strip() == "1"
-
     def fan_mode(self):
         return (self.device / "fan_mode").read_text().strip()
 
@@ -220,11 +205,6 @@ class FanHardware:
                            "run sudo ./install.sh to install the udev rule, or use sudo")
         except OSError as error:
             raise FanError(f"the driver rejected the {what} ({error.strerror})")
-
-    def set_full_speed(self, enabled):
-        if enabled and not self.max_available():
-            raise LOCKED
-        self._write(self.hwmon / "pwm1_enable", PWM_FULL_SPEED if enabled else PWM_FAN_MODE, "full speed setting")
 
     def set_fan_mode(self, mode):
         self._write(self.device / "fan_mode", mode, "fan mode")
@@ -489,8 +469,6 @@ class Snapshot:
     def __init__(self, hardware):
         self.rpms = hardware.fan_rpms()
         self.targets = hardware.fan_targets()
-        self.full_speed = hardware.full_speed()
-        self.max_available = hardware.max_available()
         self.power = hardware.power_profile()
         self.fan_mode = hardware.fan_mode()
         self.afan = hardware.afan()
@@ -571,10 +549,6 @@ def slider_labels(level, following, color):
     return line
 
 
-def fan_status(snapshot):
-    return paint("overridden by full speed", HOT) if snapshot.full_speed else ""
-
-
 def power_mode_name(profile):
     return POWER_MODE_NAMES.get(profile, profile)
 
@@ -607,7 +581,7 @@ def fan_slider(snapshot):
     level = snapshot.effective_fan_mode()
     following = snapshot.fan_mode == FOLLOW
     color = LEVEL_COLOR.get(level, TEXT)
-    track = slider_track(level, following, color) + STATUS_GAP + fan_status(snapshot)
+    track = slider_track(level, following, color)
     return [
         fan_control(snapshot),
         "",
@@ -659,10 +633,10 @@ def gauge_span(start, end, filled, color):
     return paint("━" * lit, color) + paint("─" * (end - start - lit), FAINT)
 
 
-def fan_gauge(rpm, target, scale, width, full_speed):
+def fan_gauge(rpm, target, scale, width):
     """One bar whose color follows the RPM level, with a tick at the target while the fan is still ramping."""
     filled = round(min(rpm / scale, 1.0) * width)
-    color = HOT if full_speed else level_gradient(min(rpm / scale, 1.0))
+    color = level_gradient(min(rpm / scale, 1.0))
     if abs(target - rpm) <= RAMP_THRESHOLD_RPM:
         return gauge_span(0, width, filled, color)
     tick = min(round(min(target / scale, 1.0) * width), width - 1)
@@ -671,7 +645,7 @@ def fan_gauge(rpm, target, scale, width, full_speed):
 
 def fan_rows(snapshot, width):
     gauge_width = width - len(SLIDER_INDENT) - FAN_READING_WIDTH
-    return [row(f"fan {index + 1}", fan_gauge(rpm, target, FAN_SCALE_RPM[index], gauge_width, snapshot.full_speed)
+    return [row(f"fan {index + 1}", fan_gauge(rpm, target, FAN_SCALE_RPM[index], gauge_width)
                 + paint(f"  {rpm:>5}", TEXT) + note(" rpm"))
             for index, (rpm, target) in enumerate(zip(snapshot.rpms, snapshot.targets))]
 
@@ -1090,10 +1064,6 @@ MODULE_NAME = "hp_zbook_fury_fan"
 DKMS_PACKAGE = "hp-zbook-fury-fan"
 DRIVER_NAME = "hp-zbook-fury-fan"
 SUPPORTED_BOARD = "8DE2"
-# The ACPI override is a copy of this BIOS version's SSDT33.
-OVERRIDE_BUILT_FOR_BIOS = "01.05.01"
-OVERRIDE_TABLE_DIR = Path("/etc/hp-zbook-fury-fan/acpi")
-OVERRIDE_DRACUT_CONF = Path("/etc/dracut.conf.d/90-hp-zbook-fury-fan-acpi.conf")
 MODULES_LOAD_CONF = Path("/etc/modules-load.d/hp-zbook-fury-fan.conf")
 UDEV_RULE = Path("/etc/udev/rules.d/70-hp-zbook-fury-fan.rules")
 AFAN_RESTORE_LOG = "AFAN was"
@@ -1171,7 +1141,7 @@ def check_permissions(hwmon):
     if energy and not os.access(energy / "energy_uj", os.R_OK):
         return Finding("permissions", Health.WARN, "CPU package power hidden (energy counter is root-only)",
                        "sudo ./install.sh" + FROM_PROJECT + "   (and make sure you are in the wheel or sudo group)")
-    if os.access(hwmon / "pwm1_enable", os.W_OK) and os.access(hwmon / "device" / "fan_mode", os.W_OK):
+    if os.access(hwmon / "device" / "fan_mode", os.W_OK):
         return Finding("permissions", Health.OK, "fan controls and CPU power readable without sudo")
     if not UDEV_RULE.exists():
         return Finding("permissions", Health.WARN, "fan controls need sudo", "sudo ./install.sh" + FROM_PROJECT)
@@ -1219,20 +1189,6 @@ def check_fans(hwmon):
     return Finding("fans", Health.OK, readings)
 
 
-def check_max_speed(hwmon):
-    installed = OVERRIDE_DRACUT_CONF.exists() and any(OVERRIDE_TABLE_DIR.glob("*.aml"))
-    bios = read_text("/sys/class/dmi/id/bios_version")
-    if installed and OVERRIDE_BUILT_FOR_BIOS not in bios:
-        return Finding("max speed", Health.FAIL,
-                       f"ACPI override was built for BIOS {OVERRIDE_BUILT_FOR_BIOS}, this is {bios}",
-                       "sudo ./acpi-override/remove-acpi-override.sh, then reboot" + FROM_PROJECT)
-    if not hwmon:
-        return Finding("max speed", Health.INFO, "needs the driver")
-    if read_text(hwmon / "device" / "fan_max_available") == "1":
-        return Finding("max speed", Health.OK, "full speed reaches hardware maximum (fans 1, 3)")
-    return Finding("max speed", Health.INFO, "full speed locked: the EC drops host fan overrides; boost is the max")
-
-
 def check_firmware_resets(kernel_log):
     if not kernel_log:
         return Finding("firmware", Health.INFO, "kernel log not readable (add yourself to wheel or adm)")
@@ -1263,7 +1219,6 @@ def diagnose():
         check_saved_fan_mode(),
         check_profiles(),
         check_fans(hwmon),
-        check_max_speed(hwmon),
         check_firmware_resets(kernel_log),
         check_update(),
     ]
@@ -1326,7 +1281,6 @@ def help_text():
         entry("zfan details", "one-shot details: every power limit, clocks, HP and EC sensors, battery"),
         entry("zfan doctor", "check the setup and suggest fixes"),
         entry("zfan fans <mode>", "follow (the desktop power profile) · quiet · auto · boost"),
-        entry("zfan max [off]", "full fan speed on or off"),
         entry("zfan update", "install the latest release (asks for your password)"),
         entry("zfan --version", "print the version"),
         "",
@@ -1356,10 +1310,6 @@ def run_command(hardware, argv):
         mode = choice(argv, FAN_MODES, "fans")
         hardware.set_fan_mode(mode)
         confirm(f"fans {mode}")
-    elif command == "max":
-        enabled = argv[2:] != ["off"]
-        hardware.set_full_speed(enabled)
-        confirm("full speed on" if enabled else "full speed off")
     else:
         raise FanError(f"unknown command '{command}'", "see zfan --help")
 

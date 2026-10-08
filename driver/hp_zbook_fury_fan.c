@@ -11,21 +11,12 @@
  * The fan mode (sysfs fan_mode) follows the platform profile by default;
  * quiet, auto or boost pin a curve independently of the power profile.
  *
- * A hwmon device reports fan speeds and offers pwm1_enable: 0 is full
- * speed, 2 returns to the fan mode.
- *
- * Full speed writes the EC's host overrides for fans 1 and 3 (fan 2 has
- * none). Firmware can lock those overrides before the OS boots; the EC then
- * silently drops them. The driver tests acceptance at load and resume
- * (fan_max_available) and refuses full speed while locked. Only "maximum"
- * (0x01) and "release" (0xFF) are ever written: an override replaces the EC
- * curve with no floor, so a slower value could starve cooling.
+ * A hwmon device reports fan speeds.
  */
 
 #define pr_fmt(fmt) KBUILD_MODNAME ": " fmt
 
 #include <linux/acpi.h>
-#include <linux/delay.h>
 #include <linux/dmi.h>
 #include <linux/hwmon.h>
 #include <linux/module.h>
@@ -41,33 +32,15 @@
 #define FAN_COUNT 3
 #define EC_AFAN_OFFSET 0x2D
 
-/* Writes to these target offsets are host overrides for fans 1 and 3. */
-static const u8 fan_override_offsets[] = { 0x2F, 0x38 };
-#define OVERRIDE_MAX_SPEED 0x01
-#define OVERRIDE_RELEASE 0xFF
-
-/*
- * An accepted override shows up as the fan's target; a dropped one leaves the
- * curve target (never faster than 0x1D) in place. Poll a few EC loop ticks.
- */
-#define OVERRIDE_PROBE_OFFSET 0x2F
-#define OVERRIDE_PROBE_POLL_MS 100
-#define OVERRIDE_PROBE_ATTEMPTS 10
-
 /* Counter and target bytes encode 245760 / RPM; smaller means faster. */
 #define EC_COUNTER_TO_RPM 245760U
 static const u8 fan_counter_offsets[FAN_COUNT] = { 0x2E, 0x35, 0x37 };
 static const u8 fan_target_offsets[FAN_COUNT] = { 0x2F, 0x36, 0x38 };
 
-/* hwmon pwm_enable values. */
-#define PWM_ENABLE_FULL_SPEED 0
-#define PWM_ENABLE_AUTOMATIC 2
-
 /* Measured on BIOS 01.05.01 / EC 55.3C.00. */
 #define AFAN_AUTOMATIC 0x00
 #define AFAN_BOOST 0x11
 #define AFAN_CAPPED 0x22
-#define AFAN_FULL_SPEED AFAN_BOOST
 
 /* ACPI TM07 may clear AFAN; check this often and re-apply the chosen mode. */
 #define DRIFT_CHECK_INTERVAL_MS 10000
@@ -95,12 +68,9 @@ static const u8 fan_mode_afan[] = {
 struct fury_fan {
 	struct device *profile_dev;
 	struct delayed_work drift_check;
-	struct work_struct override_probe;
 	struct mutex lock;
 	enum platform_profile_option profile;
 	enum fan_mode mode;
-	bool full_speed;
-	bool max_available;
 };
 
 static struct platform_device *fury_fan_device;
@@ -122,8 +92,6 @@ static enum platform_profile_option profile_for_afan(u8 afan)
 /* Caller holds fan->lock. */
 static u8 wanted_afan(const struct fury_fan *fan)
 {
-	if (fan->full_speed)
-		return AFAN_FULL_SPEED;
 	if (fan->mode == FAN_MODE_FOLLOW)
 		return afan_for_profile(fan->profile);
 	return fan_mode_afan[fan->mode];
@@ -143,67 +111,11 @@ static int write_afan(u8 afan)
 	return readback == afan ? 0 : -EIO;
 }
 
-static int write_overrides(u8 value)
-{
-	int i, status;
-
-	for (i = 0; i < ARRAY_SIZE(fan_override_offsets); i++) {
-		status = ec_write(fan_override_offsets[i], value);
-		if (status)
-			return status;
-	}
-	return 0;
-}
-
-static bool override_accepted(void)
-{
-	int attempt;
-	u8 target;
-
-	for (attempt = 0; attempt < OVERRIDE_PROBE_ATTEMPTS; attempt++) {
-		msleep(OVERRIDE_PROBE_POLL_MS);
-		if (!ec_read(OVERRIDE_PROBE_OFFSET, &target) &&
-		    target == OVERRIDE_MAX_SPEED)
-			return true;
-	}
-	return false;
-}
-
-/* Caller holds fan->lock. Briefly runs fans 1 and 3 at maximum when unlocked. */
-static bool overrides_available(void)
-{
-	bool accepted;
-
-	if (ec_write(OVERRIDE_PROBE_OFFSET, OVERRIDE_MAX_SPEED))
-		return false;
-	accepted = override_accepted();
-	if (ec_write(OVERRIDE_PROBE_OFFSET, OVERRIDE_RELEASE))
-		pr_warn("could not release the fan 1 override after probing\n");
-	return accepted;
-}
-
-/* Caller holds fan->lock. */
-static int apply_fan_state(struct fury_fan *fan)
-{
-	int status;
-
-	status = write_afan(wanted_afan(fan));
-	if (status)
-		return status;
-	return write_overrides(fan->full_speed ? OVERRIDE_MAX_SPEED : OVERRIDE_RELEASE);
-}
-
-/*
- * Caller holds fan->lock. Restores AFAN if firmware changed it and keeps the
- * full-speed overrides asserted; their state is not readable back.
- */
+/* Caller holds fan->lock. Restores AFAN if firmware changed it. */
 static void reassert_fan_state(struct fury_fan *fan, const char *reason)
 {
 	u8 wanted = wanted_afan(fan);
 	u8 current_afan;
-
-	if (fan->full_speed && write_overrides(OVERRIDE_MAX_SPEED))
-		pr_warn("could not reassert full-speed overrides\n");
 
 	if (ec_read(EC_AFAN_OFFSET, &current_afan) || current_afan == wanted)
 		return;
@@ -212,24 +124,6 @@ static void reassert_fan_state(struct fury_fan *fan, const char *reason)
 		reason, wanted);
 	if (write_afan(wanted))
 		pr_warn("could not restore AFAN 0x%02x\n", wanted);
-}
-
-static void override_probe_handler(struct work_struct *work)
-{
-	struct fury_fan *fan = container_of(work, struct fury_fan, override_probe);
-
-	mutex_lock(&fan->lock);
-	fan->max_available = overrides_available();
-	if (!fan->max_available && fan->full_speed) {
-		fan->full_speed = false;
-		if (apply_fan_state(fan))
-			pr_warn("could not leave full speed after the overrides locked\n");
-	} else if (fan->full_speed && write_overrides(OVERRIDE_MAX_SPEED)) {
-		pr_warn("could not reassert full-speed overrides\n");
-	}
-	mutex_unlock(&fan->lock);
-	pr_info("full speed %s\n", fan->max_available ?
-		"reaches hardware maximum" : "locked: EC drops host fan overrides");
 }
 
 static void drift_check_handler(struct work_struct *work)
@@ -271,7 +165,7 @@ static int fury_fan_profile_set(struct device *dev,
 
 	mutex_lock(&fan->lock);
 	fan->profile = profile;
-	status = apply_fan_state(fan);
+	status = write_afan(wanted_afan(fan));
 	mutex_unlock(&fan->lock);
 	return status;
 }
@@ -294,46 +188,16 @@ static int read_rpm(u8 offset, long *rpm)
 	return 0;
 }
 
-static int set_full_speed(struct fury_fan *fan, long pwm_enable)
-{
-	int status;
-
-	if (pwm_enable != PWM_ENABLE_FULL_SPEED &&
-	    pwm_enable != PWM_ENABLE_AUTOMATIC)
-		return -EINVAL;
-
-	mutex_lock(&fan->lock);
-	if (pwm_enable == PWM_ENABLE_FULL_SPEED && !fan->max_available) {
-		mutex_unlock(&fan->lock);
-		return -EPERM;
-	}
-	fan->full_speed = pwm_enable == PWM_ENABLE_FULL_SPEED;
-	status = apply_fan_state(fan);
-	mutex_unlock(&fan->lock);
-	return status;
-}
-
 static umode_t fury_fan_hwmon_visible(const void *drvdata,
 				      enum hwmon_sensor_types type, u32 attr,
 				      int channel)
 {
-	if (type == hwmon_pwm)
-		return 0644;
 	return 0444;
 }
 
 static int fury_fan_hwmon_read(struct device *dev, enum hwmon_sensor_types type,
 			       u32 attr, int channel, long *value)
 {
-	struct fury_fan *fan = dev_get_drvdata(dev);
-
-	if (type == hwmon_pwm) {
-		mutex_lock(&fan->lock);
-		*value = fan->full_speed ? PWM_ENABLE_FULL_SPEED :
-					   PWM_ENABLE_AUTOMATIC;
-		mutex_unlock(&fan->lock);
-		return 0;
-	}
 	if (attr == hwmon_fan_target)
 		return read_rpm(fan_target_offsets[channel], value);
 	return read_rpm(fan_counter_offsets[channel], value);
@@ -349,18 +213,11 @@ static int fury_fan_hwmon_read_string(struct device *dev,
 	return 0;
 }
 
-static int fury_fan_hwmon_write(struct device *dev, enum hwmon_sensor_types type,
-				u32 attr, int channel, long value)
-{
-	return set_full_speed(dev_get_drvdata(dev), value);
-}
-
 static const struct hwmon_channel_info *const fury_fan_hwmon_info[] = {
 	HWMON_CHANNEL_INFO(fan,
 			   HWMON_F_INPUT | HWMON_F_TARGET | HWMON_F_LABEL,
 			   HWMON_F_INPUT | HWMON_F_TARGET | HWMON_F_LABEL,
 			   HWMON_F_INPUT | HWMON_F_TARGET | HWMON_F_LABEL),
-	HWMON_CHANNEL_INFO(pwm, HWMON_PWM_ENABLE),
 	NULL
 };
 
@@ -368,7 +225,6 @@ static const struct hwmon_ops fury_fan_hwmon_ops = {
 	.is_visible = fury_fan_hwmon_visible,
 	.read = fury_fan_hwmon_read,
 	.read_string = fury_fan_hwmon_read_string,
-	.write = fury_fan_hwmon_write,
 };
 
 static const struct hwmon_chip_info fury_fan_hwmon_chip = {
@@ -395,7 +251,6 @@ static int fury_fan_probe(struct platform_device *pdev)
 	fan->profile = profile_for_afan(afan);
 	fan->mode = FAN_MODE_FOLLOW;
 	INIT_DELAYED_WORK(&fan->drift_check, drift_check_handler);
-	INIT_WORK(&fan->override_probe, override_probe_handler);
 	platform_set_drvdata(pdev, fan);
 
 	fan->profile_dev = devm_platform_profile_register(&pdev->dev,
@@ -404,11 +259,10 @@ static int fury_fan_probe(struct platform_device *pdev)
 		return PTR_ERR(fan->profile_dev);
 
 	hwmon_dev = devm_hwmon_device_register_with_info(&pdev->dev, HWMON_NAME,
-			fan, &fury_fan_hwmon_chip, NULL);
+			NULL, &fury_fan_hwmon_chip, NULL);
 	if (IS_ERR(hwmon_dev))
 		return PTR_ERR(hwmon_dev);
 
-	schedule_work(&fan->override_probe);
 	schedule_delayed_work(&fan->drift_check,
 			      msecs_to_jiffies(DRIFT_CHECK_INTERVAL_MS));
 	return 0;
@@ -418,25 +272,10 @@ static void fury_fan_remove(struct platform_device *pdev)
 {
 	struct fury_fan *fan = platform_get_drvdata(pdev);
 
-	cancel_work_sync(&fan->override_probe);
 	cancel_delayed_work_sync(&fan->drift_check);
-	if (write_overrides(OVERRIDE_RELEASE) || write_afan(AFAN_AUTOMATIC))
+	if (write_afan(AFAN_AUTOMATIC))
 		pr_warn("could not restore automatic fan mode\n");
 }
-
-/* 1 when full speed reaches hardware maximum on fans 1 and 3, 0 while the EC locks overrides. */
-static ssize_t fan_max_available_show(struct device *dev,
-				      struct device_attribute *attr, char *buf)
-{
-	struct fury_fan *fan = dev_get_drvdata(dev);
-	bool available;
-
-	mutex_lock(&fan->lock);
-	available = fan->max_available;
-	mutex_unlock(&fan->lock);
-	return sysfs_emit(buf, "%d\n", available);
-}
-static DEVICE_ATTR_RO(fan_max_available);
 
 static ssize_t fan_mode_show(struct device *dev, struct device_attribute *attr,
 			     char *buf)
@@ -462,7 +301,7 @@ static ssize_t fan_mode_store(struct device *dev, struct device_attribute *attr,
 
 	mutex_lock(&fan->lock);
 	fan->mode = mode;
-	status = apply_fan_state(fan);
+	status = write_afan(wanted_afan(fan));
 	mutex_unlock(&fan->lock);
 	return status ? status : count;
 }
@@ -482,7 +321,6 @@ static ssize_t afan_show(struct device *dev, struct device_attribute *attr, char
 static DEVICE_ATTR_RO(afan);
 
 static struct attribute *fury_fan_attrs[] = {
-	&dev_attr_fan_max_available.attr,
 	&dev_attr_fan_mode.attr,
 	&dev_attr_afan.attr,
 	NULL
@@ -496,7 +334,6 @@ static int fury_fan_resume(struct device *dev)
 	mutex_lock(&fan->lock);
 	reassert_fan_state(fan, "resume");
 	mutex_unlock(&fan->lock);
-	schedule_work(&fan->override_probe);
 	return 0;
 }
 
