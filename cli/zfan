@@ -946,7 +946,7 @@ def run_dashboard(hardware):
 
 # ─── updates ────────────────────────────────────────────────────────────────
 
-GITHUB_REPO = "RePixelatedMC/zfan"
+GITHUB_REPO = "piexelated/zfan"
 RELEASES_PAGE = f"https://github.com/{GITHUB_REPO}/releases"
 LATEST_RELEASE_URL = f"https://api.github.com/repos/{GITHUB_REPO}/releases/latest"
 RELEASE_CHECK_TIMEOUT_S = 3

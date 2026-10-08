@@ -35,7 +35,7 @@ Fan control for the HP ZBook Fury G1i 16" (board `8DE2`) from a running Linux sy
 ## Install
 
 ```sh
-git clone https://github.com/RePixelatedMC/zfan.git
+git clone https://github.com/piexelated/zfan.git
 cd zfan
 sudo ./install.sh
 zfan
@@ -103,7 +103,7 @@ The desktop power-mode switch (tuned-ppd or power-profiles-daemon) drives the sa
 zfan update
 ```
 
-downloads the latest [release](https://github.com/RePixelatedMC/zfan/releases), checks its SHA-256, and runs its
+downloads the latest [release](https://github.com/piexelated/zfan/releases), checks its SHA-256, and runs its
 `install.sh` through `sudo` (driver and CLI together). It doesn't need the cloned folder. `zfan doctor` tells you
 when a release is out and warns when the loaded driver and zfan are different versions. Only these two commands go
 online; the dashboard never does.
