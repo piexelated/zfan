@@ -70,8 +70,8 @@ Package power needs the CPU energy counter, which is root-only by default as a s
 
 | Key | Action |
 |---|---|
-| `←` `→` / `h` `l` | pin a quieter or cooler fan level (switches control to manual) |
 | `f` | switch control between the desktop power mode and manual |
+| `←` `→` / `h` `l` | in manual: a quieter or cooler fan level |
 | `i` / `Tab` | details view |
 | `q` / `Esc` | quit |
 

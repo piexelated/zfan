@@ -9,8 +9,8 @@ All notable changes to this project. Versions follow [Semantic Versioning](https
 
 - The CLI is now `zfan` (was `furyfan`); `install.sh` removes the old binary.
 - The dashboard is one fan slider (quieter ↔ cooler) under a `control` row: **power mode** (the fans switch with the
-  desktop power mode, shown as e.g. `balanced → auto`) or **manual** (a pinned level). `←` `→` pin a level; `f`
-  switches between the two.
+  desktop power mode, shown as e.g. `balanced → auto`) or **manual** (a pinned level). `f` switches between
+  the two; `←` `→` move the level in manual.
 - The CPU row shows the die temperature next to HP's own smoothed reading (`hp` column); the GPU row shows HP's GPU
   reading, also while the dGPU sleeps.
 - Fan bars mark the target speed while a fan is still ramping.

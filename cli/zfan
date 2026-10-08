@@ -841,7 +841,7 @@ class Toast:
 
 
 class Dashboard:
-    """←→ pin a quieter or cooler fan level, f switches between the desktop power mode and manual."""
+    """f switches between the desktop power mode and manual; in manual, ←→ pick a quieter or cooler fan level."""
 
     KEYS_LEFT = {"\x1b[D", "h"}
     KEYS_RIGHT = {"\x1b[C", "l"}
@@ -863,7 +863,10 @@ class Dashboard:
         self.toast = Toast(text, color)
 
     def step_fan_level(self, step):
-        """Moving the slider pins the fans, so it also ends following."""
+        """The slider only moves in manual; f is the one way to change who controls the fans."""
+        if self.snapshot.fan_mode == FOLLOW:
+            self.notify("the power mode sets the fans · f for manual", MUTED)
+            return
         level = self.snapshot.effective_fan_mode()
         index = FAN_LEVELS.index(level) if level in FAN_LEVELS else FAN_LEVELS.index("auto")
         target = FAN_LEVELS[max(0, min(index + step, len(FAN_LEVELS) - 1))]
@@ -921,9 +924,11 @@ class Dashboard:
         if self.view is View.DETAILS:
             keys = [hint("i", "back"), hint("q", "quit")]
         else:
-            following = self.snapshot.fan_mode == FOLLOW
-            keys = [hint("←→", "pin" if following else "fans"), hint("f", "manual" if following else "power mode"),
-                    hint("i", "details"), hint("q", "quit")]
+            if self.snapshot.fan_mode == FOLLOW:
+                keys = [hint("f", "manual")]
+            else:
+                keys = [hint("←→", "fans"), hint("f", "power mode")]
+            keys += [hint("i", "details"), hint("q", "quit")]
         footer = spread(MARGIN + supply_summary(self.snapshot.supply), "  ".join(keys), width)
         message = paint(self.toast.text, self.toast.color) if self.toast.visible() else ""
         return footer + "\n" + MARGIN + message
