@@ -29,6 +29,8 @@ PLATFORM_PROFILE = Path("/sys/firmware/acpi/platform_profile")
 # The driver starts in follow on every load; the udev rule writes this file back into it. install.sh makes it
 # writable for the admin group.
 SAVED_FAN_MODE = Path("/etc/zfan/fan-mode")
+# install.sh keeps a copy of uninstall.sh here, so zfan can uninstall itself without the project directory.
+INSTALLED_UNINSTALLER = Path("/usr/local/lib/zfan/uninstall.sh")
 DMI = Path("/sys/class/dmi/id")
 DEVICE_NAME = "hp zbook fury g1i"
 FAN_COUNT = 3
@@ -969,7 +971,7 @@ def run_dashboard(hardware):
                 next_refresh = time.monotonic() + SENSOR_REFRESH_S
 
 
-# ─── updates ────────────────────────────────────────────────────────────────
+# ─── updates and uninstall ──────────────────────────────────────────────────
 
 GITHUB_REPO = "piexelated/zfan"
 RELEASES_PAGE = f"https://github.com/{GITHUB_REPO}/releases"
@@ -1056,6 +1058,28 @@ def update():
     with tempfile.TemporaryDirectory(prefix="zfan-update-") as workdir:
         run_installer(download_release(release, Path(workdir)))
     confirm(f"updated to {release.version}")
+
+
+def confirmed(question):
+    """Ask a yes/no question on stdin; anything but y or yes (including end of input) is no."""
+    try:
+        answer = input(MARGIN + question + " [y/N] ")
+    except EOFError:
+        return False
+    return answer.strip().lower() in ("y", "yes")
+
+
+def uninstall():
+    if not INSTALLED_UNINSTALLER.is_file():
+        raise FanError("the uninstaller isn't installed", "sudo ./uninstall.sh" + FROM_PROJECT)
+    if not confirmed("remove the zfan driver, the zfan command and its saved fan mode?"):
+        print(MARGIN + "nothing removed")
+        return
+    command = ["sh", str(INSTALLED_UNINSTALLER)]
+    if os.geteuid() != 0:
+        command.insert(0, "sudo")
+    if subprocess.run(command).returncode != 0:
+        raise FanError("uninstall failed", "see the messages above")
 
 
 # ─── doctor ─────────────────────────────────────────────────────────────────
@@ -1282,6 +1306,7 @@ def help_text():
         entry("zfan doctor", "check the setup and suggest fixes"),
         entry("zfan fans <mode>", "follow (the desktop power profile) · quiet · auto · boost"),
         entry("zfan update", "install the latest release (asks for your password)"),
+        entry("zfan uninstall", "remove the driver and zfan (asks to confirm, then for your password)"),
         entry("zfan --version", "print the version"),
         "",
     ])
@@ -1337,6 +1362,9 @@ def main(argv):
     if argv[1:2] == ["update"]:
         # Works without the driver, so a broken install can update itself.
         return run_without_hardware(update)
+    if argv[1:2] == ["uninstall"]:
+        # Works without the driver, so a broken install can still be removed.
+        return run_without_hardware(uninstall)
     try:
         run_command(FanHardware(), argv)
     except FanError as error:

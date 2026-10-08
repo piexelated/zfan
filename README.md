@@ -96,6 +96,7 @@ For scripts:
 | `zfan doctor` | check driver, boot setup, permissions, power profiles, fans and updates; prints a fix for each problem |
 | `zfan fans follow\|quiet\|auto\|boost` | set the fan mode |
 | `zfan update` | install the latest release; asks for your password |
+| `zfan uninstall` | remove the driver and zfan; asks to confirm, then for your password |
 | `zfan --version` | print the version |
 
 The desktop power-mode switch (tuned-ppd or power-profiles-daemon) drives the same profiles. `sensors` shows the fan speeds.
@@ -110,6 +111,20 @@ downloads the latest [release](https://github.com/piexelated/zfan/releases), che
 `install.sh` through `sudo` (driver and CLI together). It doesn't need the cloned folder. `zfan doctor` tells you
 when a release is out and warns when the loaded driver and zfan are different versions. Only these two commands go
 online; the dashboard never does.
+
+## Uninstall
+
+```sh
+zfan uninstall
+```
+
+asks to confirm, then runs the uninstaller `install.sh` kept in `/usr/local/lib/zfan`, so it works without the cloned
+folder (or run `sudo ./uninstall.sh` from the clone). It unloads the driver, which hands the fans back to HP's
+automatic mode, and removes the DKMS driver, the boot and udev setup, the saved fan mode and `zfan` itself. The CPU
+energy counter is root-only again after the next boot.
+
+DKMS's signing key (`/var/lib/dkms/mok.*`) and the Secure Boot key you enrolled stay: other DKMS modules share them.
+Remove the enrolled key with `mokutil --delete /var/lib/dkms/mok.pub` only if nothing else needs it.
 
 ## Layout
 

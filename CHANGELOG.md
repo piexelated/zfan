@@ -26,6 +26,7 @@ All notable changes to this project. Versions follow [Semantic Versioning](https
 - README: requirements and install steps for a fresh machine.
 - The fan mode (power mode or a pinned level) survives reboots, driver reloads and updates; `zfan doctor` checks it.
 - `zfan update` downloads the latest GitHub release, verifies its checksum and installs it.
+- `zfan uninstall` (and `uninstall.sh` in the project directory) removes the driver, the boot setup and zfan.
 - `zfan doctor` checks GitHub for a newer release and warns when the loaded driver and zfan versions differ.
 
 ### Removed

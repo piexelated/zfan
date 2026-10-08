@@ -42,7 +42,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - name: ShellCheck
-        run: shellcheck install.sh tools/*.sh
+        run: shellcheck install.sh uninstall.sh tools/*.sh
 
   driver:
     runs-on: ubuntu-latest

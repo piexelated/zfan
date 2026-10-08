@@ -15,6 +15,9 @@ REQUIRED_COMMANDS="dkms make gcc python3 udevadm modprobe"
 DKMS_SIGNING_KEY=/var/lib/dkms/mok.pub
 # zfan saves the fan mode here; the udev rule restores it when the driver loads.
 SAVED_FAN_MODE=/etc/zfan/fan-mode
+# A copy of uninstall.sh lives here so `zfan uninstall` works without the project directory.
+ZFAN_LIB_DIR=/usr/local/lib/zfan
+INSTALLED_UNINSTALLER=$ZFAN_LIB_DIR/uninstall.sh
 
 fail() {
 	echo "install.sh: $1" >&2
@@ -114,6 +117,11 @@ install_cli() {
 	rm -f /usr/local/bin/furyfan
 }
 
+install_uninstaller() {
+	install -d -m 755 "$ZFAN_LIB_DIR"
+	install -m 755 uninstall.sh "$INSTALLED_UNINSTALLER"
+}
+
 secure_boot_enabled() {
 	command -v mokutil >/dev/null && mokutil --sb-state 2>/dev/null | grep -q "SecureBoot enabled"
 }
@@ -146,6 +154,7 @@ install_driver
 install_saved_fan_mode "$group"
 install_boot_integration "$group"
 install_cli
+install_uninstaller
 load_driver
 apply_permissions_and_profile
 echo "installed $PACKAGE $VERSION; members of '$group' can change fan modes without sudo. Run: zfan"
