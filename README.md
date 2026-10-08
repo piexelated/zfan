@@ -14,14 +14,41 @@ Fan control for the HP ZBook Fury G1i 16" (board `8DE2`) from a running Linux sy
   fan 1        ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━│━━━━━━━━──────────────   4636 rpm
 ```
 
+## Requirements
+
+- **The laptop:** HP ZBook Fury G1i 16" (DMI vendor `HP`, board `8DE2`). The driver refuses to load anywhere else.
+  Check with `cat /sys/class/dmi/id/board_name`.
+- **Linux 6.14 or newer**, with headers for the running kernel.
+- **Build tools and Python 3.10+:**
+
+  | Distribution | Command |
+  |---|---|
+  | Fedora | `sudo dnf install dkms kernel-devel-$(uname -r) gcc make python3` |
+  | Debian / Ubuntu | `sudo apt install dkms linux-headers-$(uname -r) build-essential python3` |
+  | Arch | `sudo pacman -S dkms linux-headers base-devel python` |
+
+- **A power-profile service** (`tuned-ppd` or `power-profiles-daemon`, the default on GNOME and KDE) if you want the
+  fans to follow the desktop power mode. Without one, pin a fan level in zfan instead.
+- **Optional:** `nvidia-smi` (from the NVIDIA driver) for GPU power, clocks and limits. Everything else zfan shows comes
+  from drivers the kernel loads by itself (`coretemp`, `intel_rapl`, ACPI thermal zones, `hp-wmi`).
+
 ## Install
 
 ```sh
+git clone https://github.com/RePixelatedMC/hp-zbook-fury-fan-control.git
+cd hp-zbook-fury-fan-control
 sudo ./install.sh
+zfan
 ```
 
-This builds the driver with DKMS (rebuilt on kernel updates), loads it at boot, lets `wheel` members change fan mode and full speed
-without sudo, installs `zfan` to `/usr/local/bin`, and re-applies the current tuned profile.
+`install.sh` checks all of the above first and tells you what is missing and how to install it. Then it builds the
+driver with DKMS (rebuilt on kernel updates), loads it at boot, lets members of your admin group (`wheel`, or `sudo` on
+Debian and Ubuntu) change the fan mode without sudo, installs `zfan` to `/usr/local/bin` and re-applies the current
+tuned profile. Run `zfan doctor` if anything looks off.
+
+**Secure Boot:** if it is on, the kernel only loads signed modules. DKMS signs the driver with its own key, which you
+enroll once: `sudo mokutil --import /var/lib/dkms/mok.pub`, pick a password, reboot, choose *Enroll MOK* and enter
+it. `install.sh` tells you when this is needed.
 
 ## Use
 
@@ -36,8 +63,8 @@ without sudo, installs `zfan` to `/usr/local/bin`, and re-applies the current tu
   every EC sensor (the hottest picks the fan-curve step), the raw `AFAN` byte,
   the tuned profile and the BIOS "Customized Fan Control Options" value (`fan ceiling`); battery state, energy, health and cycles.
 
-`install.sh` lets `wheel` members read the CPU package energy counter (root-only by default as a side-channel
-mitigation; wheel members can sudo anyway), which package power needs.
+Package power needs the CPU energy counter, which is root-only by default as a side-channel mitigation;
+`install.sh` lets your admin group read it (they can sudo anyway).
 
 | Key | Action |
 |---|---|

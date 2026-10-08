@@ -19,6 +19,10 @@ All notable changes to this project. Versions follow [Semantic Versioning](https
 - Details view: HP's ACPI thermal zones (CPU, GPU, skin, battery, charger, board) and the BIOS "Customized Fan Control
   Options" value as `fan ceiling`.
 - `zfan --version`; the version shows next to the name in the dashboard.
+- `install.sh` checks the laptop, kernel (6.14+), build tools and headers first and prints the install command for
+  Fedora, Debian/Ubuntu or Arch; it explains Secure Boot key enrollment when the kernel rejects the driver.
+- Fan control without sudo works for the `sudo` group where there is no `wheel` group (Debian, Ubuntu).
+- README: requirements and install steps for a fresh machine.
 
 ### Removed
 

@@ -335,7 +335,7 @@ class SupplyReading:
 
 class SystemReadings:
     """CPU, GPU, EC thermal zones and power supply. Everything here is readable without root,
-    except CPU package energy (wheel-readable through the udev rule)."""
+    except CPU package energy (readable by the admin group through the udev rule)."""
 
     def __init__(self):
         self.package_zone = self._find_package_zone()
@@ -1021,14 +1021,14 @@ def check_permissions(hwmon):
     energy = SystemReadings._find_package_zone()
     if energy and not os.access(energy / "energy_uj", os.R_OK):
         return Finding("permissions", Health.WARN, "CPU package power hidden (energy counter is root-only)",
-                       "sudo ./install.sh" + FROM_PROJECT + "   (and make sure you are in the wheel group)")
+                       "sudo ./install.sh" + FROM_PROJECT + "   (and make sure you are in the wheel or sudo group)")
     if os.access(hwmon / "pwm1_enable", os.W_OK) and os.access(hwmon / "device" / "fan_mode", os.W_OK):
         return Finding("permissions", Health.OK, "fan controls and CPU power readable without sudo")
     if not UDEV_RULE.exists():
         return Finding("permissions", Health.WARN, "fan controls need sudo", "sudo ./install.sh" + FROM_PROJECT)
     return Finding("permissions", Health.WARN, "udev rule present but not applied",
                    "sudo udevadm trigger --action=add --subsystem-match=hwmon --attr-match=name=hp_zbook_fury"
-                   "  (and make sure you are in the wheel group)")
+                   "  (and make sure you are in the wheel or sudo group)")
 
 
 def check_profiles():
