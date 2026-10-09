@@ -1,7 +1,8 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
 /*
- * Fan profiles for the HP ZBook Fury G1i (board 8DE2) through the
- * standard platform_profile interface.
+ * Fan profiles for HP ZBook laptops through the standard platform_profile
+ * interface. Tested on the ZBook Fury G1i 16" (board 8DE2); loads on any
+ * ZBook whose ACPI tables name the same EC fan registers at the same offsets.
  *
  * The EC ignores host fan-target writes once the OS owns ACPI, but it
  * still honors its fan-mode selector AFAN (EC offset 0x2D). Each nibble
@@ -36,6 +37,26 @@
 #define EC_COUNTER_TO_RPM 245760U
 static const u8 fan_counter_offsets[FAN_COUNT] = { 0x2E, 0x35, 0x37 };
 static const u8 fan_target_offsets[FAN_COUNT] = { 0x2F, 0x36, 0x38 };
+
+/*
+ * HP's ACPI names for the EC registers this driver uses. Reading each by name
+ * and at its offset must agree before the driver touches the EC.
+ */
+struct ec_register {
+	const char *acpi_name;
+	u8 offset;
+};
+
+static const struct ec_register known_registers[] = {
+	{ "AFAN", EC_AFAN_OFFSET },
+	{ "FRDC", 0x2E }, { "FTGC", 0x2F },
+	{ "FR2C", 0x35 }, { "FT2C", 0x36 },
+	{ "FR3C", 0x37 }, { "FT3C", 0x38 },
+};
+
+/* Fan counters tick between the two reads; retry before calling it a mismatch. */
+#define REGISTER_MATCH_ATTEMPTS 3
+#define EC_HID "PNP0C09"
 
 /* Measured on BIOS 01.05.01 / EC 55.3C.00. */
 #define AFAN_AUTOMATIC 0x00
@@ -351,31 +372,67 @@ static struct platform_driver fury_fan_driver = {
 
 static const struct dmi_system_id fury_fan_dmi_table[] = {
 	{
-		.ident = "HP ZBook Fury G1i 16 inch",
+		.ident = "HP ZBook",
 		.matches = {
 			DMI_MATCH(DMI_SYS_VENDOR, "HP"),
-			DMI_MATCH(DMI_BOARD_NAME, "8DE2"),
+			DMI_MATCH(DMI_PRODUCT_NAME, "ZBook"),
 		},
 	},
 	{ }
 };
 MODULE_DEVICE_TABLE(dmi, fury_fan_dmi_table);
 
-/* Other HP models may share the EC layout, but writing it blind could do anything. */
-static bool force;
-module_param(force, bool, 0444);
-MODULE_PARM_DESC(force, "Load on untested HP laptops too; their EC may differ");
+static acpi_status find_ec(acpi_handle handle, u32 level, void *context,
+			   void **found)
+{
+	*found = handle;
+	return AE_CTRL_TERMINATE;
+}
+
+static bool register_matches(acpi_handle ec, const struct ec_register *reg)
+{
+	unsigned long long by_name;
+	int attempt;
+	u8 by_offset;
+
+	for (attempt = 0; attempt < REGISTER_MATCH_ATTEMPTS; attempt++) {
+		if (ACPI_FAILURE(acpi_evaluate_integer(ec, (char *)reg->acpi_name,
+						       NULL, &by_name)))
+			return false;
+		if (ec_read(reg->offset, &by_offset))
+			return false;
+		if (by_name == by_offset)
+			return true;
+	}
+	return false;
+}
+
+/* Read-only: safe to run on a laptop whose EC this driver doesn't know. */
+static bool ec_layout_matches(void)
+{
+	acpi_handle ec = NULL;
+	int i;
+
+	acpi_get_devices(EC_HID, find_ec, NULL, &ec);
+	if (!ec)
+		return false;
+	for (i = 0; i < ARRAY_SIZE(known_registers); i++) {
+		if (!register_matches(ec, &known_registers[i])) {
+			pr_info("EC register %s is not at 0x%02X; fan controller not supported\n",
+				known_registers[i].acpi_name,
+				known_registers[i].offset);
+			return false;
+		}
+	}
+	return true;
+}
 
 static int __init fury_fan_init(void)
 {
 	int status;
 
-	if (!dmi_check_system(fury_fan_dmi_table)) {
-		if (!force || !dmi_match(DMI_SYS_VENDOR, "HP"))
-			return -ENODEV;
-		pr_warn("untested board %s, loading because force=1\n",
-			dmi_get_system_info(DMI_BOARD_NAME) ?: "unknown");
-	}
+	if (!dmi_check_system(fury_fan_dmi_table) || !ec_layout_matches())
+		return -ENODEV;
 
 	status = platform_driver_register(&fury_fan_driver);
 	if (status)
@@ -400,6 +457,6 @@ static void __exit fury_fan_exit(void)
 module_init(fury_fan_init);
 module_exit(fury_fan_exit);
 
-MODULE_DESCRIPTION("HP ZBook Fury G1i fan profiles and fan speeds via EC AFAN");
+MODULE_DESCRIPTION("HP ZBook fan profiles and fan speeds via EC AFAN");
 MODULE_VERSION("0.5.0");
 MODULE_LICENSE("GPL");

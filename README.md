@@ -1,6 +1,6 @@
 # zfan
 
-Fan control for the HP ZBook Fury G1i 16" on Linux: a kernel driver and a terminal dashboard.
+Fan control for HP ZBook laptops on Linux: a kernel driver and a terminal dashboard.
 
 ```
   control      ● power mode    ○ manual                    performance → boost
@@ -16,9 +16,9 @@ Fan control for the HP ZBook Fury G1i 16" on Linux: a kernel driver and a termin
 
 ## Requirements
 
-- HP ZBook Fury G1i 16" (board `8DE2`; check with `cat /sys/class/dmi/id/board_name`). Tested on that model with
-  BIOS 01.05.01 only. Other ZBook Fury G1i models and HP ZBooks may work but are untested: `install.sh` refuses
-  them unless you run `sudo ./install.sh --force`, at your own risk, since the driver writes HP's EC fan registers.
+- An HP ZBook. Tested on the ZBook Fury G1i 16" (board `8DE2`, BIOS 01.05.01); other ZBooks should work too. The
+  driver first checks that the laptop's fan controller matches the one it knows, and `install.sh` stops without
+  installing anything if it doesn't.
 - Linux 6.14+ with headers for the running kernel, DKMS, gcc, make and Python 3.10+
   - Fedora: `sudo dnf install dkms kernel-devel-$(uname -r) gcc make python3`
   - Debian / Ubuntu: `sudo apt install dkms linux-headers-$(uname -r) build-essential python3`

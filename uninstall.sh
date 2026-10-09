@@ -32,8 +32,7 @@ remove_dkms_versions() {
 }
 
 remove_boot_integration() {
-	rm -f /etc/modules-load.d/hp-zbook-fury-fan.conf /etc/modprobe.d/hp-zbook-fury-fan.conf \
-		/etc/udev/rules.d/70-hp-zbook-fury-fan.rules
+	rm -f /etc/modules-load.d/hp-zbook-fury-fan.conf /etc/udev/rules.d/70-hp-zbook-fury-fan.rules
 	udevadm control --reload
 }
 

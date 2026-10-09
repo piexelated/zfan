@@ -1,6 +1,7 @@
 # hp-zbook-fury-fan
 
-Fan profiles for the HP ZBook Fury G1i (board 8DE2) on Linux, through the standard `platform_profile` interface.
+Fan profiles for HP ZBook laptops on Linux, through the standard `platform_profile` interface. Tested on the
+ZBook Fury G1i 16" (board 8DE2).
 The desktop power-mode switch (via `tuned-ppd` or `power-profiles-daemon`) controls the fans with no extra tooling.
 
 | Power mode | platform_profile | EC `AFAN` (0x2D) | Fans under load |
@@ -12,7 +13,8 @@ The desktop power-mode switch (via `tuned-ppd` or `power-profiles-daemon`) contr
 Why `AFAN`: once the OS owns ACPI, the EC drops host fan-speed writes but still honors this fan-mode selector.
 
 Behavior:
-- binds only on DMI vendor `HP`, board `8DE2`;
+- loads only on an HP ZBook whose ACPI tables name the EC registers it uses (`AFAN`, `FRDC`/`FTGC`, `FR2C`/`FT2C`,
+  `FR3C`/`FT3C`) at the offsets it uses; it reads each both ways and compares before writing anything;
 - re-applies the chosen mode after resume and if firmware resets `AFAN` (checked every 10 s);
 - restores automatic mode (`0x00`) on unload.
 

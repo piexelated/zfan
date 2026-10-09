@@ -1,17 +1,13 @@
 #!/bin/sh
 # Install the hp-zbook-fury-fan driver (DKMS), boot-time loading, udev permissions and the zfan CLI.
-# Run as root from the project directory. --force installs on an untested HP laptop.
+# Run as root from the project directory.
 set -eu
 
 PACKAGE=hp-zbook-fury-fan
 VERSION=$(sed -n 's/^PACKAGE_VERSION="\(.*\)"/\1/p' driver/dkms.conf)
 SOURCE_DIR=/usr/src/$PACKAGE-$VERSION
 SUPPORTED_VENDOR=HP
-SUPPORTED_BOARD=8DE2
-# Written for --force so the driver keeps loading on an untested laptop; updates reuse it as the earlier consent.
-FORCE_OPTIONS=/etc/modprobe.d/hp-zbook-fury-fan.conf
-FORCE=false
-if [ "${1:-}" = "--force" ] || [ -f "$FORCE_OPTIONS" ]; then FORCE=true; fi
+SUPPORTED_PRODUCT=ZBook
 # devm_platform_profile_register() with platform_profile_ops landed in Linux 6.14.
 MIN_KERNEL=6.14
 KERNEL=$(uname -r)
@@ -53,26 +49,12 @@ require_root() {
 	[ "$(id -u)" -eq 0 ] || fail "needs root" "sudo ./install.sh"
 }
 
-require_supported_laptop() {
+# The driver itself checks that the fan controller matches when it loads (see load_driver).
+require_hp_zbook() {
 	vendor=$(cat /sys/class/dmi/id/sys_vendor 2>/dev/null || true)
-	board=$(cat /sys/class/dmi/id/board_name 2>/dev/null || true)
-	[ "$vendor" = "$SUPPORTED_VENDOR" ] && [ "$board" = "$SUPPORTED_BOARD" ] && return
-	[ "$vendor" = "$SUPPORTED_VENDOR" ] || fail "this is a '${vendor:-unknown}' laptop" "the driver only knows HP's EC"
-	$FORCE || fail "board $board is untested (only the HP ZBook Fury G1i 16\", board $SUPPORTED_BOARD, is)" \
-		"other HP ZBooks may work; to try at your own risk: sudo ./install.sh --force"
-	echo "install.sh: board $board is untested; installing anyway (--force)" >&2
-}
-
-untested_board() {
-	[ "$(cat /sys/class/dmi/id/board_name 2>/dev/null || true)" != "$SUPPORTED_BOARD" ]
-}
-
-install_force_option() {
-	if untested_board; then
-		echo "options hp_zbook_fury_fan force=1" >"$FORCE_OPTIONS"
-	else
-		rm -f "$FORCE_OPTIONS"
-	fi
+	product=$(cat /sys/class/dmi/id/product_name 2>/dev/null || true)
+	[ "$vendor" = "$SUPPORTED_VENDOR" ] && case $product in *"$SUPPORTED_PRODUCT"*) true ;; *) false ;; esac ||
+		fail "this is a '${vendor:-unknown}' '${product:-unknown}'" "zfan works only on HP ZBook laptops"
 }
 
 require_kernel() {
@@ -100,14 +82,14 @@ admin_group() {
 	fail "no wheel or sudo group to grant fan control to"
 }
 
-remove_old_dkms_versions() {
+remove_dkms_versions() {
 	dkms status "$PACKAGE" 2>/dev/null | sed -n "s|^$PACKAGE/\([^,:]*\).*|\1|p" | sort -u |
 		while read -r old; do dkms remove "$PACKAGE/$old" --all || true; done
 }
 
 install_driver() {
 	rmmod hp_zbook_fury_fan 2>/dev/null || true
-	remove_old_dkms_versions
+	remove_dkms_versions
 	rm -rf "$SOURCE_DIR"
 	install -d "$SOURCE_DIR"
 	install -m 644 driver/hp_zbook_fury_fan.c driver/Makefile driver/dkms.conf "$SOURCE_DIR"/
@@ -144,13 +126,22 @@ secure_boot_enabled() {
 	command -v mokutil >/dev/null && mokutil --sb-state 2>/dev/null | grep -q "SecureBoot enabled"
 }
 
+# Runs before anything else is installed, so a laptop the driver turns down is left as it was.
 load_driver() {
-	modprobe hp_zbook_fury_fan && return
+	error=$(modprobe hp_zbook_fury_fan 2>&1) && return
+	remove_dkms_versions
+	rm -rf "$SOURCE_DIR"
+	case $error in
+	*"No such device"*)
+		fail "this ZBook's fan controller doesn't match the one zfan knows; nothing was installed" \
+			"$(dmesg | grep hp_zbook_fury_fan | tail -n 1)"
+		;;
+	esac
 	if secure_boot_enabled; then
-		fail "Secure Boot rejected the driver: enroll DKMS's signing key once, then reboot" \
+		fail "Secure Boot rejected the driver: enroll DKMS's signing key once, then run install.sh again" \
 			"sudo mokutil --import $DKMS_SIGNING_KEY   (choose a password, then 'Enroll MOK' at the next boot)"
 	fi
-	fail "the driver did not load" "see: sudo dmesg | tail"
+	fail "the driver did not load; nothing was installed" "$error"
 }
 
 apply_permissions_and_profile() {
@@ -163,17 +154,16 @@ apply_permissions_and_profile() {
 }
 
 require_root
-require_supported_laptop
+require_hp_zbook
 require_kernel
 require_build_tools
 group=$(admin_group)
 
 install_driver
-install_force_option
+load_driver
 install_saved_fan_mode "$group"
 install_boot_integration "$group"
 install_cli
 install_uninstaller
-load_driver
 apply_permissions_and_profile
 echo "installed $PACKAGE $VERSION; members of '$group' can change fan modes without sudo. Run: zfan"
