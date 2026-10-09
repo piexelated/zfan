@@ -90,14 +90,6 @@ The choice survives reboots and updates.
 
 Only `doctor` and `update` go online.
 
-## Maintaining
-
-The screenshots above come from `python3 tools/screenshots.py` (needs the driver, Google Chrome and Pillow).
-
-
-Bump the version in `cli/zfan`, `driver/dkms.conf` and the driver's `MODULE_VERSION`, add it to
-[CHANGELOG.md](CHANGELOG.md), then push a `vX.Y.Z` tag. CI checks that the versions agree and publishes the release.
-
 ## License
 
 [GPL-2.0-or-later](LICENSE)

@@ -1,6 +1,9 @@
 #!/bin/sh
 # Check that zfan, the DKMS package and the driver carry the same version, and print it.
 # With a tag argument (v1.2.3), also check the tag matches. Run from the project directory.
+#
+# To release: bump VERSION in cli/zfan, PACKAGE_VERSION in driver/dkms.conf and MODULE_VERSION in the driver, add a
+# "## [x.y.z]" section to CHANGELOG.md, then push a vX.Y.Z tag; the release workflow runs this and publishes.
 set -eu
 
 cli=$(sed -n 's/^VERSION = "\(.*\)"/\1/p' cli/zfan)
