@@ -1,0 +1,45 @@
+name: Report your ZBook
+description: Tell us whether zfan works on your HP ZBook model, so the tested list can grow.
+title: "[ZBook] "
+labels: [compatibility]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        zfan is tested on the ZBook Fury G1i 16" only. A report from your model, working or not, helps everyone with the same laptop.
+  - type: textarea
+    id: hardware
+    attributes:
+      label: Hardware
+      description: Output of this command.
+      placeholder: cat /sys/class/dmi/id/{product_name,board_name,bios_version}
+      render: shell
+    validations:
+      required: true
+  - type: dropdown
+    id: result
+    attributes:
+      label: Result
+      options:
+        - Works
+        - The installer said the fan controller doesn't match
+        - Installs, but something is off
+    validations:
+      required: true
+  - type: textarea
+    id: doctor
+    attributes:
+      label: zfan doctor
+      description: Output of `zfan doctor`, if it installed.
+      render: shell
+  - type: textarea
+    id: kernel-log
+    attributes:
+      label: Driver messages
+      description: Output of `sudo dmesg | grep hp_zbook_fan` (shows which register didn't match).
+      render: shell
+  - type: textarea
+    id: notes
+    attributes:
+      label: Anything else
+      description: How the fan levels behave, distro and kernel, anything that looked wrong.
