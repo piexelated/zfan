@@ -20,11 +20,15 @@ jobs:
           name=zfan-${{ steps.version.outputs.version }}
           git archive --format=tar.gz --prefix="$name/" -o "$name.tar.gz" "$GITHUB_REF_NAME"
           sha256sum "$name.tar.gz" > "$name.tar.gz.sha256"
+      # Release notes render every newline as a line break, so wrapped bullet lines are joined.
       - name: Release notes from CHANGELOG.md
         run: |
           awk -v v="${{ steps.version.outputs.version }}" '
             /^## \[/ { if (found) exit; found = index($0, "[" v "]") > 0; next }
-            found
+            !found { next }
+            /^  [^ -]/ { sub(/^ +/, ""); line = line " " $0; next }
+            { if (started) print line; line = $0; started = 1 }
+            END { if (started) print line }
           ' CHANGELOG.md > notes.md
           test -s notes.md
       - name: Publish
