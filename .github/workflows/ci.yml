@@ -4,12 +4,17 @@ on:
   push:
     branches: [main]
   pull_request:
+  # Weekly, so kernel API breakage in Fedora's newest kernel shows up even when nobody pushes.
+  schedule:
+    - cron: "17 5 * * 1"
+  workflow_dispatch:
 
 permissions:
   contents: read
 
 jobs:
   version:
+    if: github.event_name != 'schedule'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -17,6 +22,7 @@ jobs:
         run: tools/check-version.sh
 
   cli:
+    if: github.event_name != 'schedule'
     runs-on: ubuntu-latest
     strategy:
       matrix:
@@ -38,6 +44,7 @@ jobs:
           ! grep -q Traceback err.txt
 
   shell:
+    if: github.event_name != 'schedule'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
