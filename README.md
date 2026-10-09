@@ -1,18 +1,18 @@
+<div align="center">
+
 # zfan
 
-Fan control for HP ZBook laptops on Linux: a kernel driver and a terminal dashboard.
+**Fan control for HP ZBook laptops on Linux.**<br>
+A small kernel driver and a terminal dashboard: let the desktop power mode drive the fans, or pick the level yourself.
 
-```
-  control      ● power mode    ○ manual                    performance → boost
+[![CI](https://github.com/piexelated/zfan/actions/workflows/ci.yml/badge.svg)](https://github.com/piexelated/zfan/actions/workflows/ci.yml)
+![Linux 6.14+](https://img.shields.io/badge/linux-6.14%2B-informational)
+![HP ZBook](https://img.shields.io/badge/HP-ZBook-0096d6)
+[![License: GPL-2.0-or-later](https://img.shields.io/badge/license-GPL--2.0--or--later-blue)](LICENSE)
 
-               Quieter                           Cooler
-  fans         ─────────────────────────────────────△──
-               quiet             auto             boost
+<img src="docs/images/dashboard.png" width="760" alt="zfan dashboard: the desktop's performance mode drives the fans to boost while the CPU runs at 91 °C">
 
-               temp   hp     power    limit      clock
-  cpu          95°    78°    49 W     80 W       3.2 GHz    throttling 86%
-  gpu          55°    52°    8 W      95 W       P8
-```
+</div>
 
 ## Requirements
 
@@ -39,6 +39,12 @@ zfan
 key once: `sudo mokutil --import /var/lib/dkms/mok.pub`, reboot and choose *Enroll MOK*. Run `zfan doctor` if
 anything looks off.
 
+<details>
+<summary><code>zfan doctor</code> checks the whole setup and prints a fix for anything wrong</summary>
+<br>
+<img src="docs/images/doctor.png" width="560" alt="zfan doctor: every check passing">
+</details>
+
 ## Use
 
 The `control` row shows who sets the fan level:
@@ -46,6 +52,10 @@ The `control` row shows who sets the fan level:
 - **power mode** (default): the fans follow the desktop power mode. Power saver and balanced give auto, performance
   gives boost.
 - **manual**: the level you pick stays, whatever the power mode.
+
+<p align="center">
+<img src="docs/images/manual.png" width="760" alt="zfan in manual: fans pinned to quiet while the power mode is performance">
+</p>
 
 | Key | Action |
 |---|---|
@@ -62,6 +72,12 @@ The `control` row shows who sets the fan level:
 
 The choice survives reboots and updates.
 
+<details>
+<summary>The details view (<code>i</code>): every power limit, clocks, HP's and the EC's sensors, battery</summary>
+<br>
+<img src="docs/images/details.png" width="760" alt="zfan details view">
+</details>
+
 ## Commands
 
 | Command | Effect |
@@ -74,7 +90,10 @@ The choice survives reboots and updates.
 
 Only `doctor` and `update` go online.
 
-## Releasing
+## Maintaining
+
+The screenshots above come from `python3 tools/screenshots.py` (needs the driver, Google Chrome and Pillow).
+
 
 Bump the version in `cli/zfan`, `driver/dkms.conf` and the driver's `MODULE_VERSION`, add it to
 [CHANGELOG.md](CHANGELOG.md), then push a `vX.Y.Z` tag. CI checks that the versions agree and publishes the release.
