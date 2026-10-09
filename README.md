@@ -72,11 +72,12 @@ The `control` row shows who sets the fan level:
 
 The choice survives reboots and updates.
 
-<details>
-<summary>The details view (<code>i</code>): every power limit, clocks, HP's and the EC's sensors, battery</summary>
-<br>
-<img src="docs/images/details.png" width="760" alt="zfan details view">
-</details>
+Press `i` for the details view: every CPU power limit, clocks, the GPU, HP's and the EC's temperature sensors, and
+the battery.
+
+<p align="center">
+<img src="docs/images/details.png" width="760" alt="zfan details view: CPU power limits, CPU and GPU, HP and EC sensors, battery">
+</p>
 
 ## Commands
 
