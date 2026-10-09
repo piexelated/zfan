@@ -4,8 +4,8 @@
 # DKMS's Secure Boot signing key (/var/lib/dkms/mok.*) stays: other DKMS modules share it.
 set -eu
 
-PACKAGE=hp-zbook-fury-fan
-MODULE=hp_zbook_fury_fan
+PACKAGE=hp-zbook-fan
+MODULE=hp_zbook_fan
 # install.sh keeps a copy of this script here so it outlives the project directory.
 ZFAN_LIB_DIR=/usr/local/lib/zfan
 SAVED_FAN_MODE_DIR=/etc/zfan
@@ -32,7 +32,7 @@ remove_dkms_versions() {
 }
 
 remove_boot_integration() {
-	rm -f /etc/modules-load.d/hp-zbook-fury-fan.conf /etc/udev/rules.d/70-hp-zbook-fury-fan.rules
+	rm -f /etc/modules-load.d/hp-zbook-fan.conf /etc/udev/rules.d/70-hp-zbook-fan.rules
 	udevadm control --reload
 }
 

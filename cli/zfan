@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""zfan — fan control for the HP ZBook Fury G1i (hp-zbook-fury-fan driver).
+"""zfan — fan control for HP ZBook laptops (hp-zbook-fan driver).
 
 Run without arguments for the interactive dashboard; subcommands are for scripts.
 """
@@ -24,7 +24,7 @@ from pathlib import Path
 
 # Project version; driver/dkms.conf and the driver's MODULE_VERSION carry the same one (CI checks).
 VERSION = "0.5.0"
-HWMON_NAME = "hp_zbook_fury"
+HWMON_NAME = "hp_zbook"
 PLATFORM_PROFILE = Path("/sys/firmware/acpi/platform_profile")
 # The driver starts in follow on every load; the udev rule writes this file back into it. install.sh makes it
 # writable for the admin group.
@@ -170,7 +170,7 @@ class FanHardware:
         for name_file in Path("/sys/class/hwmon").glob("hwmon*/name"):
             if name_file.read_text().strip() == HWMON_NAME:
                 return name_file.parent
-        raise FanError("driver not loaded", "load it with: sudo modprobe hp_zbook_fury_fan")
+        raise FanError("driver not loaded", "load it with: sudo modprobe hp_zbook_fan")
 
     @staticmethod
     def _find_package_temperature():
@@ -1092,15 +1092,15 @@ def uninstall():
 
 # ─── doctor ─────────────────────────────────────────────────────────────────
 
-MODULE_NAME = "hp_zbook_fury_fan"
-DKMS_PACKAGE = "hp-zbook-fury-fan"
-DRIVER_NAME = "hp-zbook-fury-fan"
+MODULE_NAME = "hp_zbook_fan"
+DKMS_PACKAGE = "hp-zbook-fan"
+DRIVER_NAME = "hp-zbook-fan"
 # The one board and BIOS zfan is tested on. The driver loads on any ZBook whose EC fan registers match.
 TESTED_BOARD = "8DE2"
 TESTED_BIOS = "01.05.01"
 SUPPORTED_PRODUCT = "ZBook"
-MODULES_LOAD_CONF = Path("/etc/modules-load.d/hp-zbook-fury-fan.conf")
-UDEV_RULE = Path("/etc/udev/rules.d/70-hp-zbook-fury-fan.rules")
+MODULES_LOAD_CONF = Path("/etc/modules-load.d/hp-zbook-fan.conf")
+UDEV_RULE = Path("/etc/udev/rules.d/70-hp-zbook-fan.rules")
 AFAN_RESTORE_LOG = "AFAN was"
 FROM_PROJECT = "   (in the project directory)"
 
@@ -1148,7 +1148,7 @@ def check_driver(hwmon):
                        "sudo ./install.sh" + FROM_PROJECT)
     if not loaded or not hwmon:
         return Finding("driver", Health.FAIL, f"{installed} installed but not loaded",
-                       f"sudo modprobe {MODULE_NAME}; then: journalctl -k -b | grep -i fury")
+                       f"sudo modprobe {MODULE_NAME}; then: journalctl -k -b | grep hp_zbook_fan")
     if loaded != installed:
         return Finding("driver", Health.WARN, f"{loaded} loaded, {installed} installed",
                        f"sudo modprobe -r {MODULE_NAME} && sudo modprobe {MODULE_NAME}")
@@ -1184,7 +1184,7 @@ def check_permissions(hwmon):
     if not UDEV_RULE.exists():
         return Finding("permissions", Health.WARN, "fan controls need sudo", "sudo ./install.sh" + FROM_PROJECT)
     return Finding("permissions", Health.WARN, "udev rule present but not applied",
-                   "sudo udevadm trigger --action=add --subsystem-match=hwmon --attr-match=name=hp_zbook_fury"
+                   "sudo udevadm trigger --action=add --subsystem-match=hwmon --attr-match=name=hp_zbook"
                    "  (and make sure you are in the wheel or sudo group)")
 
 
@@ -1312,7 +1312,7 @@ def help_text():
     return "\n".join([
         "",
         MARGIN + paint("zfan", TEXT, bold=True) + " " + note(VERSION)
-        + paint("  fan control for the HP ZBook Fury G1i", MUTED),
+        + paint("  fan control for HP ZBook laptops", MUTED),
         "",
         entry("zfan", "interactive dashboard"),
         entry("zfan status", "one-shot status"),

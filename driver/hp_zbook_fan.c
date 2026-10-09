@@ -26,9 +26,9 @@
 #include <linux/platform_profile.h>
 #include <linux/workqueue.h>
 
-#define DRIVER_NAME "hp-zbook-fury-fan"
+#define DRIVER_NAME "hp-zbook-fan"
 
-#define HWMON_NAME "hp_zbook_fury"
+#define HWMON_NAME "hp_zbook"
 
 #define FAN_COUNT 3
 #define EC_AFAN_OFFSET 0x2D
@@ -86,7 +86,7 @@ static const u8 fan_mode_afan[] = {
 	[FAN_MODE_BOOST] = AFAN_BOOST,
 };
 
-struct fury_fan {
+struct zbook_fan {
 	struct device *profile_dev;
 	struct delayed_work drift_check;
 	struct mutex lock;
@@ -94,7 +94,7 @@ struct fury_fan {
 	enum fan_mode mode;
 };
 
-static struct platform_device *fury_fan_device;
+static struct platform_device *zbook_fan_device;
 
 /*
  * Like HP's own mode table (DPTF data vault): only best performance boosts
@@ -111,7 +111,7 @@ static enum platform_profile_option profile_for_afan(u8 afan)
 }
 
 /* Caller holds fan->lock. */
-static u8 wanted_afan(const struct fury_fan *fan)
+static u8 wanted_afan(const struct zbook_fan *fan)
 {
 	if (fan->mode == FAN_MODE_FOLLOW)
 		return afan_for_profile(fan->profile);
@@ -133,7 +133,7 @@ static int write_afan(u8 afan)
 }
 
 /* Caller holds fan->lock. Restores AFAN if firmware changed it. */
-static void reassert_fan_state(struct fury_fan *fan, const char *reason)
+static void reassert_fan_state(struct zbook_fan *fan, const char *reason)
 {
 	u8 wanted = wanted_afan(fan);
 	u8 current_afan;
@@ -149,8 +149,8 @@ static void reassert_fan_state(struct fury_fan *fan, const char *reason)
 
 static void drift_check_handler(struct work_struct *work)
 {
-	struct fury_fan *fan = container_of(to_delayed_work(work),
-					    struct fury_fan, drift_check);
+	struct zbook_fan *fan = container_of(to_delayed_work(work),
+					     struct zbook_fan, drift_check);
 
 	mutex_lock(&fan->lock);
 	reassert_fan_state(fan, "firmware change");
@@ -159,7 +159,7 @@ static void drift_check_handler(struct work_struct *work)
 			      msecs_to_jiffies(DRIFT_CHECK_INTERVAL_MS));
 }
 
-static int fury_fan_profile_probe(void *drvdata, unsigned long *choices)
+static int zbook_fan_profile_probe(void *drvdata, unsigned long *choices)
 {
 	set_bit(PLATFORM_PROFILE_QUIET, choices);
 	set_bit(PLATFORM_PROFILE_BALANCED, choices);
@@ -167,10 +167,10 @@ static int fury_fan_profile_probe(void *drvdata, unsigned long *choices)
 	return 0;
 }
 
-static int fury_fan_profile_get(struct device *dev,
-				enum platform_profile_option *profile)
+static int zbook_fan_profile_get(struct device *dev,
+				 enum platform_profile_option *profile)
 {
-	struct fury_fan *fan = dev_get_drvdata(dev);
+	struct zbook_fan *fan = dev_get_drvdata(dev);
 
 	mutex_lock(&fan->lock);
 	*profile = fan->profile;
@@ -178,10 +178,10 @@ static int fury_fan_profile_get(struct device *dev,
 	return 0;
 }
 
-static int fury_fan_profile_set(struct device *dev,
-				enum platform_profile_option profile)
+static int zbook_fan_profile_set(struct device *dev,
+				 enum platform_profile_option profile)
 {
-	struct fury_fan *fan = dev_get_drvdata(dev);
+	struct zbook_fan *fan = dev_get_drvdata(dev);
 	int status;
 
 	mutex_lock(&fan->lock);
@@ -191,10 +191,10 @@ static int fury_fan_profile_set(struct device *dev,
 	return status;
 }
 
-static const struct platform_profile_ops fury_fan_profile_ops = {
-	.probe = fury_fan_profile_probe,
-	.profile_get = fury_fan_profile_get,
-	.profile_set = fury_fan_profile_set,
+static const struct platform_profile_ops zbook_fan_profile_ops = {
+	.probe = zbook_fan_profile_probe,
+	.profile_get = zbook_fan_profile_get,
+	.profile_set = zbook_fan_profile_set,
 };
 
 static int read_rpm(u8 offset, long *rpm)
@@ -209,24 +209,25 @@ static int read_rpm(u8 offset, long *rpm)
 	return 0;
 }
 
-static umode_t fury_fan_hwmon_visible(const void *drvdata,
-				      enum hwmon_sensor_types type, u32 attr,
-				      int channel)
+static umode_t zbook_fan_hwmon_visible(const void *drvdata,
+				       enum hwmon_sensor_types type, u32 attr,
+				       int channel)
 {
 	return 0444;
 }
 
-static int fury_fan_hwmon_read(struct device *dev, enum hwmon_sensor_types type,
-			       u32 attr, int channel, long *value)
+static int zbook_fan_hwmon_read(struct device *dev,
+				enum hwmon_sensor_types type, u32 attr,
+				int channel, long *value)
 {
 	if (attr == hwmon_fan_target)
 		return read_rpm(fan_target_offsets[channel], value);
 	return read_rpm(fan_counter_offsets[channel], value);
 }
 
-static int fury_fan_hwmon_read_string(struct device *dev,
-				      enum hwmon_sensor_types type, u32 attr,
-				      int channel, const char **label)
+static int zbook_fan_hwmon_read_string(struct device *dev,
+				       enum hwmon_sensor_types type, u32 attr,
+				       int channel, const char **label)
 {
 	static const char *const labels[FAN_COUNT] = { "Fan 1", "Fan 2", "Fan 3" };
 
@@ -234,7 +235,7 @@ static int fury_fan_hwmon_read_string(struct device *dev,
 	return 0;
 }
 
-static const struct hwmon_channel_info *const fury_fan_hwmon_info[] = {
+static const struct hwmon_channel_info *const zbook_fan_hwmon_info[] = {
 	HWMON_CHANNEL_INFO(fan,
 			   HWMON_F_INPUT | HWMON_F_TARGET | HWMON_F_LABEL,
 			   HWMON_F_INPUT | HWMON_F_TARGET | HWMON_F_LABEL,
@@ -242,21 +243,21 @@ static const struct hwmon_channel_info *const fury_fan_hwmon_info[] = {
 	NULL
 };
 
-static const struct hwmon_ops fury_fan_hwmon_ops = {
-	.is_visible = fury_fan_hwmon_visible,
-	.read = fury_fan_hwmon_read,
-	.read_string = fury_fan_hwmon_read_string,
+static const struct hwmon_ops zbook_fan_hwmon_ops = {
+	.is_visible = zbook_fan_hwmon_visible,
+	.read = zbook_fan_hwmon_read,
+	.read_string = zbook_fan_hwmon_read_string,
 };
 
-static const struct hwmon_chip_info fury_fan_hwmon_chip = {
-	.ops = &fury_fan_hwmon_ops,
-	.info = fury_fan_hwmon_info,
+static const struct hwmon_chip_info zbook_fan_hwmon_chip = {
+	.ops = &zbook_fan_hwmon_ops,
+	.info = zbook_fan_hwmon_info,
 };
 
-static int fury_fan_probe(struct platform_device *pdev)
+static int zbook_fan_probe(struct platform_device *pdev)
 {
 	struct device *hwmon_dev;
-	struct fury_fan *fan;
+	struct zbook_fan *fan;
 	u8 afan;
 	int status;
 
@@ -275,12 +276,12 @@ static int fury_fan_probe(struct platform_device *pdev)
 	platform_set_drvdata(pdev, fan);
 
 	fan->profile_dev = devm_platform_profile_register(&pdev->dev,
-			DRIVER_NAME, fan, &fury_fan_profile_ops);
+			DRIVER_NAME, fan, &zbook_fan_profile_ops);
 	if (IS_ERR(fan->profile_dev))
 		return PTR_ERR(fan->profile_dev);
 
 	hwmon_dev = devm_hwmon_device_register_with_info(&pdev->dev, HWMON_NAME,
-			NULL, &fury_fan_hwmon_chip, NULL);
+			NULL, &zbook_fan_hwmon_chip, NULL);
 	if (IS_ERR(hwmon_dev))
 		return PTR_ERR(hwmon_dev);
 
@@ -289,9 +290,9 @@ static int fury_fan_probe(struct platform_device *pdev)
 	return 0;
 }
 
-static void fury_fan_remove(struct platform_device *pdev)
+static void zbook_fan_remove(struct platform_device *pdev)
 {
-	struct fury_fan *fan = platform_get_drvdata(pdev);
+	struct zbook_fan *fan = platform_get_drvdata(pdev);
 
 	cancel_delayed_work_sync(&fan->drift_check);
 	if (write_afan(AFAN_AUTOMATIC))
@@ -301,7 +302,7 @@ static void fury_fan_remove(struct platform_device *pdev)
 static ssize_t fan_mode_show(struct device *dev, struct device_attribute *attr,
 			     char *buf)
 {
-	struct fury_fan *fan = dev_get_drvdata(dev);
+	struct zbook_fan *fan = dev_get_drvdata(dev);
 	enum fan_mode mode;
 
 	mutex_lock(&fan->lock);
@@ -313,7 +314,7 @@ static ssize_t fan_mode_show(struct device *dev, struct device_attribute *attr,
 static ssize_t fan_mode_store(struct device *dev, struct device_attribute *attr,
 			      const char *buf, size_t count)
 {
-	struct fury_fan *fan = dev_get_drvdata(dev);
+	struct zbook_fan *fan = dev_get_drvdata(dev);
 	int mode, status;
 
 	mode = sysfs_match_string(fan_mode_names, buf);
@@ -341,16 +342,16 @@ static ssize_t afan_show(struct device *dev, struct device_attribute *attr, char
 }
 static DEVICE_ATTR_RO(afan);
 
-static struct attribute *fury_fan_attrs[] = {
+static struct attribute *zbook_fan_attrs[] = {
 	&dev_attr_fan_mode.attr,
 	&dev_attr_afan.attr,
 	NULL
 };
-ATTRIBUTE_GROUPS(fury_fan);
+ATTRIBUTE_GROUPS(zbook_fan);
 
-static int fury_fan_resume(struct device *dev)
+static int zbook_fan_resume(struct device *dev)
 {
-	struct fury_fan *fan = dev_get_drvdata(dev);
+	struct zbook_fan *fan = dev_get_drvdata(dev);
 
 	mutex_lock(&fan->lock);
 	reassert_fan_state(fan, "resume");
@@ -358,19 +359,19 @@ static int fury_fan_resume(struct device *dev)
 	return 0;
 }
 
-static DEFINE_SIMPLE_DEV_PM_OPS(fury_fan_pm_ops, NULL, fury_fan_resume);
+static DEFINE_SIMPLE_DEV_PM_OPS(zbook_fan_pm_ops, NULL, zbook_fan_resume);
 
-static struct platform_driver fury_fan_driver = {
+static struct platform_driver zbook_fan_driver = {
 	.driver = {
 		.name = DRIVER_NAME,
-		.pm = pm_sleep_ptr(&fury_fan_pm_ops),
-		.dev_groups = fury_fan_groups,
+		.pm = pm_sleep_ptr(&zbook_fan_pm_ops),
+		.dev_groups = zbook_fan_groups,
 	},
-	.probe = fury_fan_probe,
-	.remove = fury_fan_remove,
+	.probe = zbook_fan_probe,
+	.remove = zbook_fan_remove,
 };
 
-static const struct dmi_system_id fury_fan_dmi_table[] = {
+static const struct dmi_system_id zbook_fan_dmi_table[] = {
 	{
 		.ident = "HP ZBook",
 		.matches = {
@@ -380,7 +381,7 @@ static const struct dmi_system_id fury_fan_dmi_table[] = {
 	},
 	{ }
 };
-MODULE_DEVICE_TABLE(dmi, fury_fan_dmi_table);
+MODULE_DEVICE_TABLE(dmi, zbook_fan_dmi_table);
 
 static acpi_status find_ec(acpi_handle handle, u32 level, void *context,
 			   void **found)
@@ -427,35 +428,35 @@ static bool ec_layout_matches(void)
 	return true;
 }
 
-static int __init fury_fan_init(void)
+static int __init zbook_fan_init(void)
 {
 	int status;
 
-	if (!dmi_check_system(fury_fan_dmi_table) || !ec_layout_matches())
+	if (!dmi_check_system(zbook_fan_dmi_table) || !ec_layout_matches())
 		return -ENODEV;
 
-	status = platform_driver_register(&fury_fan_driver);
+	status = platform_driver_register(&zbook_fan_driver);
 	if (status)
 		return status;
 
-	fury_fan_device = platform_device_register_simple(DRIVER_NAME,
-							  PLATFORM_DEVID_NONE,
-							  NULL, 0);
-	if (IS_ERR(fury_fan_device)) {
-		platform_driver_unregister(&fury_fan_driver);
-		return PTR_ERR(fury_fan_device);
+	zbook_fan_device = platform_device_register_simple(DRIVER_NAME,
+							   PLATFORM_DEVID_NONE,
+							   NULL, 0);
+	if (IS_ERR(zbook_fan_device)) {
+		platform_driver_unregister(&zbook_fan_driver);
+		return PTR_ERR(zbook_fan_device);
 	}
 	return 0;
 }
 
-static void __exit fury_fan_exit(void)
+static void __exit zbook_fan_exit(void)
 {
-	platform_device_unregister(fury_fan_device);
-	platform_driver_unregister(&fury_fan_driver);
+	platform_device_unregister(zbook_fan_device);
+	platform_driver_unregister(&zbook_fan_driver);
 }
 
-module_init(fury_fan_init);
-module_exit(fury_fan_exit);
+module_init(zbook_fan_init);
+module_exit(zbook_fan_exit);
 
 MODULE_DESCRIPTION("HP ZBook fan profiles and fan speeds via EC AFAN");
 MODULE_VERSION("0.5.0");

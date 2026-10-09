@@ -32,7 +32,7 @@ jobs:
         run: |
           python cli/zfan --version
           python cli/zfan --help
-          # No hp_zbook_fury hwmon on the runner: status must fail cleanly with a hint, not a traceback.
+          # No hp_zbook hwmon on the runner: status must fail cleanly with a hint, not a traceback.
           if python cli/zfan status 2> err.txt; then exit 1; fi
           cat err.txt
           ! grep -q Traceback err.txt
@@ -56,4 +56,4 @@ jobs:
         run: |
           kdir=$(ls -d /usr/src/kernels/* | sort -V | tail -1)
           make -C driver KDIR="$kdir" W=1
-          modinfo -F version driver/hp_zbook_fury_fan.ko
+          modinfo -F version driver/hp_zbook_fan.ko

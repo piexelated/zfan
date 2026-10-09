@@ -8,7 +8,7 @@ set -eu
 
 cli=$(sed -n 's/^VERSION = "\(.*\)"/\1/p' cli/zfan)
 dkms=$(sed -n 's/^PACKAGE_VERSION="\(.*\)"/\1/p' driver/dkms.conf)
-module=$(sed -n 's/^MODULE_VERSION("\(.*\)");/\1/p' driver/hp_zbook_fury_fan.c)
+module=$(sed -n 's/^MODULE_VERSION("\(.*\)");/\1/p' driver/hp_zbook_fan.c)
 
 if [ -z "$cli" ] || [ "$cli" != "$dkms" ] || [ "$cli" != "$module" ]; then
 	echo "version mismatch: cli/zfan=$cli driver/dkms.conf=$dkms MODULE_VERSION=$module" >&2

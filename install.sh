@@ -1,9 +1,9 @@
 #!/bin/sh
-# Install the hp-zbook-fury-fan driver (DKMS), boot-time loading, udev permissions and the zfan CLI.
+# Install the hp-zbook-fan driver (DKMS), boot-time loading, udev permissions and the zfan CLI.
 # Run as root from the project directory.
 set -eu
 
-PACKAGE=hp-zbook-fury-fan
+PACKAGE=hp-zbook-fan
 VERSION=$(sed -n 's/^PACKAGE_VERSION="\(.*\)"/\1/p' driver/dkms.conf)
 SOURCE_DIR=/usr/src/$PACKAGE-$VERSION
 SUPPORTED_VENDOR=HP
@@ -90,18 +90,18 @@ remove_dkms_versions() {
 }
 
 install_driver() {
-	rmmod hp_zbook_fury_fan 2>/dev/null || true
+	rmmod hp_zbook_fan 2>/dev/null || true
 	remove_dkms_versions
 	rm -rf "$SOURCE_DIR"
 	install -d "$SOURCE_DIR"
-	install -m 644 driver/hp_zbook_fury_fan.c driver/Makefile driver/dkms.conf "$SOURCE_DIR"/
+	install -m 644 driver/hp_zbook_fan.c driver/Makefile driver/dkms.conf "$SOURCE_DIR"/
 	dkms install "$PACKAGE/$VERSION"
 }
 
 install_boot_integration() {
-	install -m 644 packaging/hp-zbook-fury-fan.modules-load.conf /etc/modules-load.d/hp-zbook-fury-fan.conf
-	sed "s/@ADMIN_GROUP@/$1/g" packaging/70-hp-zbook-fury-fan.rules >/etc/udev/rules.d/70-hp-zbook-fury-fan.rules
-	chmod 644 /etc/udev/rules.d/70-hp-zbook-fury-fan.rules
+	install -m 644 packaging/hp-zbook-fan.modules-load.conf /etc/modules-load.d/hp-zbook-fan.conf
+	sed "s/@ADMIN_GROUP@/$1/g" packaging/70-hp-zbook-fan.rules >/etc/udev/rules.d/70-hp-zbook-fan.rules
+	chmod 644 /etc/udev/rules.d/70-hp-zbook-fan.rules
 	udevadm control --reload
 }
 
@@ -115,8 +115,6 @@ install_saved_fan_mode() {
 
 install_cli() {
 	install -m 755 cli/zfan /usr/local/bin/zfan
-	# The CLI used to be called furyfan.
-	rm -f /usr/local/bin/furyfan
 }
 
 install_uninstaller() {
@@ -130,13 +128,13 @@ secure_boot_enabled() {
 
 # Runs before anything else is installed, so a laptop the driver turns down is left as it was.
 load_driver() {
-	error=$(modprobe hp_zbook_fury_fan 2>&1) && return
+	error=$(modprobe hp_zbook_fan 2>&1) && return
 	remove_dkms_versions
 	rm -rf "$SOURCE_DIR"
 	case $error in
 	*"No such device"*)
 		fail "this ZBook's fan controller doesn't match the one zfan knows; nothing was installed" \
-			"$(dmesg | grep hp_zbook_fury_fan | tail -n 1)"
+			"$(dmesg | grep hp_zbook_fan | tail -n 1)"
 		;;
 	esac
 	if secure_boot_enabled; then
@@ -148,7 +146,7 @@ load_driver() {
 
 apply_permissions_and_profile() {
 	# The hwmon device can appear before udev has loaded the new rule; replay its add event.
-	udevadm trigger --action=add --subsystem-match=hwmon --attr-match=name=hp_zbook_fury --settle
+	udevadm trigger --action=add --subsystem-match=hwmon --attr-match=name=hp_zbook --settle
 	udevadm trigger --action=add --subsystem-match=powercap --sysname-match=intel-rapl:0 --settle
 	if command -v tuned-adm >/dev/null; then
 		tuned-adm profile "$(tuned-adm active | sed -n 's/^Current active profile: //p')"

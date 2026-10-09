@@ -1,4 +1,4 @@
-obj-m += hp_zbook_fury_fan.o
+obj-m += hp_zbook_fan.o
 
 KDIR ?= /lib/modules/$(shell uname -r)/build
 

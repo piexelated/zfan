@@ -1,4 +1,4 @@
-# hp-zbook-fury-fan
+# hp-zbook-fan
 
 Fan profiles for HP ZBook laptops on Linux, through the standard `platform_profile` interface. Tested on the
 ZBook Fury G1i 16" (board 8DE2).
@@ -18,7 +18,7 @@ Behavior:
 - re-applies the chosen mode after resume and if firmware resets `AFAN` (checked every 10 s);
 - restores automatic mode (`0x00`) on unload.
 
-hwmon (`hp_zbook_fury`): `fan1..3_input` and `fan1..3_target` in RPM.
+hwmon (`hp_zbook`): `fan1..3_input` and `fan1..3_target` in RPM.
 
 Platform device attributes:
 - `fan_mode`: `follow` (default, set by the platform profile as above), or `quiet` (capped, AFAN `0x22`) / `auto` / `boost` to pin a curve
@@ -30,7 +30,7 @@ Build and try manually:
 
 ```sh
 make
-sudo insmod hp_zbook_fury_fan.ko
+sudo insmod hp_zbook_fan.ko
 cat /sys/firmware/acpi/platform_profile_choices   # quiet balanced performance
 ```
 
