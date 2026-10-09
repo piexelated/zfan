@@ -53,8 +53,10 @@ require_root() {
 require_hp_zbook() {
 	vendor=$(cat /sys/class/dmi/id/sys_vendor 2>/dev/null || true)
 	product=$(cat /sys/class/dmi/id/product_name 2>/dev/null || true)
-	[ "$vendor" = "$SUPPORTED_VENDOR" ] && case $product in *"$SUPPORTED_PRODUCT"*) true ;; *) false ;; esac ||
-		fail "this is a '${vendor:-unknown}' '${product:-unknown}'" "zfan works only on HP ZBook laptops"
+	case "$vendor/$product" in
+	"$SUPPORTED_VENDOR/"*"$SUPPORTED_PRODUCT"*) return ;;
+	esac
+	fail "this is a '${vendor:-unknown}' '${product:-unknown}'" "zfan works only on HP ZBook laptops"
 }
 
 require_kernel() {
