@@ -2,7 +2,7 @@
 
 # zfan
 
-**Fan control for HP ZBook laptops on Linux.**<br>
+**"Fan control" for HP ZBook laptops on Linux.**<br>
 A small kernel driver and a terminal dashboard: let the desktop power mode drive the fans, or pick the level yourself.
 
 [![CI](https://github.com/piexelated/zfan/actions/workflows/ci.yml/badge.svg)](https://github.com/piexelated/zfan/actions/workflows/ci.yml)
